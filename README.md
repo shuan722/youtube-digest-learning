@@ -1,6 +1,6 @@
 # YouTube Digest Learning
 
-> A learning-focused community edition based on [YouTube Digest](https://github.com/zarazhangrui/youtube-digest) by Zara Zhang. Version 1.4.3 builds a complete watch, understand, shadow, collect, review, and deep-reading workflow around real YouTube videos.
+> A learning-focused community edition based on [YouTube Digest](https://github.com/zarazhangrui/youtube-digest) by Zara Zhang. Version 1.5.0 builds a complete watch, understand, shadow, collect, review, and deep-reading workflow around real YouTube videos.
 
 This project preserves the upstream MIT License and copyright notice. It is an independent derivative project and is not an official release of the original author.
 
@@ -23,6 +23,16 @@ Turn every YouTube video into a resource for deep learning. YouTube Digest Learn
 - Generate a printable intensive-reading PDF with bilingual transcript, UK and US IPA, personalized vocabulary, natural phrases, key sentences, ideas, questions, and speaking practice.
 - Reuse cached transcript, translation, and intensive-reading results when reopening the same video to reduce duplicate API requests.
 - Preview a video through an AI overview in English, Simplified Chinese, or an aligned bilingual view without paying for another request when switching languages.
+- Read transcripts straight from YouTube's captions and translate them with Chrome's on-device model, so watching a video with a bilingual transcript costs nothing.
+
+## Version 1.5.0
+
+- Read the transcript from YouTube's own caption track in the video tab you already have open, so a transcript no longer needs a Supadata key or credits.
+- Fall back to YouTube's built-in **Show transcript** panel when the caption request comes back empty, and report live progress in the side panel while it works.
+- Turned Supadata into an optional paid fallback that stays off until you tick the setting and save a key.
+- Switched transcript translation to Chrome's built-in on-device translator by default. It is free, needs no API key, and requires Chrome 138 or newer.
+- Kept DeepSeek available for transcript translation through a setting, with no silent fallback in either direction, so a failed browser translation never spends tokens you did not choose to spend.
+- Added language-pack download progress for the first browser translation of a language, and a clear message pointing at the setting when Chrome's translator is unavailable.
 
 ## Version 1.4.3
 
