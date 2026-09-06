@@ -12,7 +12,15 @@ var YTD_SETTINGS = (() => {
     aiBaseUrl: "https://api.deepseek.com",
     aiModel: "deepseek-v4-flash",
     supadataApiKey: "",
+    // Native YouTube captions are the default and only automatic source.
+    // Supadata is a paid fallback the user must opt into explicitly.
+    allowSupadataFallback: false,
+    // Chrome's on-device translator is free, so it is the default. "ai" sends
+    // transcript batches to DeepSeek instead, which costs tokens.
+    translationProvider: "browser",
   });
+
+  const TRANSLATION_PROVIDERS = Object.freeze(["browser", "ai"]);
 
   function isLegacyCustom(input) {
     return !!input && input.provider === "custom";
@@ -32,6 +40,12 @@ var YTD_SETTINGS = (() => {
         typeof input.supadataApiKey === "string"
           ? input.supadataApiKey.trim()
           : "",
+      allowSupadataFallback: input.allowSupadataFallback === true,
+      translationProvider: TRANSLATION_PROVIDERS.includes(
+        input.translationProvider,
+      )
+        ? input.translationProvider
+        : DEFAULTS.translationProvider,
     };
   }
 
@@ -57,6 +71,7 @@ var YTD_SETTINGS = (() => {
   return {
     STORAGE_KEY,
     DEFAULTS,
+    TRANSLATION_PROVIDERS,
     isLegacyCustom,
     normalize,
     migrateLegacyCustom,

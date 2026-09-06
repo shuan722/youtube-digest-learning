@@ -17,6 +17,8 @@ test("DeepSeek defaults use V4 Flash", () => {
   assert.equal(normalized.aiModel, "deepseek-v4-flash");
   assert.equal(normalized.aiApiKey, "example-key");
   assert.equal(normalized.supadataApiKey, "example-supadata");
+  // The paid fallback must default to off, whatever the stored value looks like.
+  assert.equal(normalized.allowSupadataFallback, false);
   assert.equal(
     settings.chatCompletionsUrl(),
     "https://api.deepseek.com/chat/completions",
@@ -49,6 +51,19 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
     aiApiKey: "new-deepseek-key",
   });
   assert.equal(configuredDeepSeek.aiApiKey, "new-deepseek-key");
+});
+
+test("the Supadata fallback flag is opt-in and strictly boolean", () => {
+  assert.equal(settings.DEFAULTS.allowSupadataFallback, false);
+  assert.equal(settings.normalize({}).allowSupadataFallback, false);
+  assert.equal(
+    settings.normalize({ allowSupadataFallback: "yes" }).allowSupadataFallback,
+    false,
+  );
+  assert.equal(
+    settings.normalize({ allowSupadataFallback: true }).allowSupadataFallback,
+    true,
+  );
 });
 
 test("Supadata receives a canonical YouTube URL", () => {

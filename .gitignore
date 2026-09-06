@@ -7,6 +7,9 @@ config.js
 # Planning / intermediate files (kept local, not published)
 architecture.excalidraw
 explainer-video/
+deepseek-api-demo.md
+supadata-api-demo.md
+reverse-engineering-report.md
 
 # Tooling & agent workspaces
 .agents/

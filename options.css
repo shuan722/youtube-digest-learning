@@ -400,3 +400,26 @@ footer {
     padding: 17px;
   }
 }
+
+/* Checkbox rows opt out of the full-width input sizing above. */
+.toggle-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 18px 0 0;
+  font-weight: 600;
+}
+
+.toggle-row input[type="checkbox"] {
+  width: auto;
+  margin-top: 3px;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+.toggle-row input[type="radio"] {
+  width: auto;
+  margin-top: 3px;
+  flex: none;
+  accent-color: var(--accent);
+}

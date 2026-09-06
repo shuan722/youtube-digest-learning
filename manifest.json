@@ -39,6 +39,10 @@
     {
       "resources": ["sidepanel.html", "sidepanel.css", "sidepanel.js"],
       "matches": ["https://www.youtube.com/*"]
+    },
+    {
+      "resources": ["page-bridge.js"],
+      "matches": ["https://www.youtube.com/*"]
     }
   ],
   "icons": {

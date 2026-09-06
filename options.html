@@ -37,17 +37,38 @@
         </div>
         <h1 data-i18n="heading">Bring your own API keys</h1>
         <p class="lede" data-i18n="lede">
-          Keys stay in this Chrome profile and are sent only to Supadata and
-          DeepSeek. This open-source extension has no developer server or
-          analytics.
+          Subtitles come from YouTube itself. Your key stays in this Chrome
+          profile and is sent only to DeepSeek. This open-source extension has
+          no developer server or analytics.
         </p>
       </header>
 
       <form id="settingsForm">
         <section class="card">
-          <h2 data-i18n="transcriptProvider">Transcript provider</h2>
+          <h2 data-i18n="transcriptProvider">Transcript source</h2>
+          <p class="help" data-i18n="nativeTranscriptHelp">
+            Timestamped subtitles are read from YouTube's own caption track in
+            the open video tab. No key and no cost.
+          </p>
+
+          <label class="toggle-row" for="allowSupadataFallback">
+            <input
+              id="allowSupadataFallback"
+              name="allowSupadataFallback"
+              type="checkbox"
+            />
+            <span data-i18n="supadataFallbackLabel"
+              >Use the paid Supadata service when YouTube's captions cannot be
+              read</span
+            >
+          </label>
+          <p class="help" data-i18n="supadataFallbackHelp">
+            Off by default. Supadata bills per request, so it only runs when
+            this box is ticked and a key is saved below.
+          </p>
+
           <label for="supadataApiKey" data-i18n="supadataApiKeyLabel"
-            >Supadata API key</label
+            >Supadata API key (optional)</label
           >
           <input
             id="supadataApiKey"
@@ -59,7 +80,7 @@
           />
           <p class="help">
             <span data-i18n="supadataHelp"
-              >Used to fetch timestamped YouTube subtitles.</span
+              >Only needed for the fallback above.</span
             >
             <a
               href="https://dash.supadata.ai/auth/sign-up"
@@ -70,6 +91,38 @@
             ><span data-i18n="supadataHelpSuffix"
               >. Supadata generates the key during onboarding.</span
             >
+          </p>
+        </section>
+
+        <section class="card">
+          <h2 data-i18n="translationProvider">Transcript translation</h2>
+          <label class="toggle-row" for="translationBrowser">
+            <input
+              id="translationBrowser"
+              name="translationProvider"
+              type="radio"
+              value="browser"
+            />
+            <span data-i18n="translationBrowserLabel"
+              >Chrome's built-in translator (free, on-device)</span
+            >
+          </label>
+          <label class="toggle-row" for="translationAi">
+            <input
+              id="translationAi"
+              name="translationProvider"
+              type="radio"
+              value="ai"
+            />
+            <span data-i18n="translationAiLabel"
+              >DeepSeek (costs tokens, tuned for learning)</span
+            >
+          </label>
+          <p class="help" data-i18n="translationProviderHelp">
+            Chrome translates the transcript on your device, so it costs
+            nothing and needs no key. It requires Chrome 138 or newer and a
+            one-time model download. DeepSeek reads the whole batch in context,
+            which reads better on idioms and technical wording.
           </p>
         </section>
 

@@ -90,7 +90,15 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(readme, /generated transcript costs \*\*2 credits per video minute\*\*/i);
   assert.match(readme, /HTTP `206` still uses \*\*1 credit\*\*/i);
   assert.match(readme, /forces `mode=native`/i);
-  assert.match(readme, /roughly 100 transcript lookups per month/i);
+  // Native YouTube captions are the documented default; Supadata is the
+  // opt-in fallback and the copy must keep saying so.
+  assert.match(readme, /^## How transcripts are read$/m);
+  assert.match(readme, /^## Optional Supadata fallback$/m);
+  assert.match(readme, /it is \*\*off by default\*\*/i);
+  assert.match(readme, /most videos never spend a credit/i);
+  assert.match(chineseReadme, /^## 字幕的读取方式$/m);
+  assert.match(chineseReadme, /^## 可选的 Supadata 降级/m);
+  assert.match(chineseReadme, /它\*\*默认关闭\*\*/);
   assert.match(readme, /supadata\.ai\/pricing/i);
   assert.match(readme, /docs\.supadata\.ai\/get-transcript/i);
   assert.match(readme, /dash\.supadata\.ai\/auth\/sign-up/i);

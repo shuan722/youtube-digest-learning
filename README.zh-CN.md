@@ -63,9 +63,9 @@ YouTube Digest 是一个需要自行提供 API Key 的开源项目，通过 GitH
 你的 Agent 应该帮你：
 
 1. 先询问你想把项目长期保存在哪里，再下载或克隆到那里，并告诉你准确的完整路径。如果你需要建议，可以推荐 macOS 或 Linux 上的 `~/Documents/youtube-digest`，或 Windows 上的 `%USERPROFILE%\Documents\youtube-digest`。
-2. 打开下方 Supadata 和 DeepSeek 官方页面，指导你创建自己的账号。
+2. 打开下方 DeepSeek 官方页面，指导你创建自己的账号。
 3. 指导你在 Chrome 中通过“加载已解压的扩展程序”选择你刚才确定的那个准确项目文件夹。
-4. 告诉你应该在扩展的“设置”页面哪个位置填写 API Key。
+4. 告诉你应该在扩展的“设置”页面哪个位置填写 DeepSeek API Key。
 5. 打开一个带字幕的 YouTube 视频，确认字幕和翻译功能可以使用。
 
 安装后请让这个文件夹留在原位。如果移动或删除它，Chrome 中加载的本地扩展会失效，需要从新的长期存放位置重新加载。
@@ -89,20 +89,11 @@ YouTube Digest 是一个需要自行提供 API Key 的开源项目，通过 GitH
 
 ## 设置 API Key
 
-YouTube Digest 需要你在自己的服务账号中准备两个 Key：
+YouTube Digest 只需要你在自己的服务账号中准备一个 Key：
 
-1. **Supadata API Key**，用于获取 YouTube 字幕。
-2. **DeepSeek API Key**，用于生成概览、讲解内容、翻译和自动润色笔记。
+1. **DeepSeek API Key**，用于生成概览、讲解内容、翻译和自动润色笔记。
 
-### 获取 Supadata API Key
-
-1. 打开 Supadata 官方[注册页面](https://dash.supadata.ai/auth/sign-up)。
-2. 创建账号并完成简短的新手引导。
-3. Supadata 会在新手引导过程中自动生成 API Key。
-4. 之后可以随时打开 [Supadata 控制台](https://dash.supadata.ai/)查找或管理 Key。
-5. 复制 Key，并粘贴到 YouTube Digest 设置中的 **Supadata API key**。
-
-如果页面流程发生变化，请查看 [Supadata 官方文档](https://docs.supadata.ai/)。
+字幕不需要任何 Key。它直接从你已经打开的 YouTube 视频标签页中读取原生字幕轨道。
 
 ### 获取 DeepSeek API Key
 
@@ -149,7 +140,7 @@ API Key 和设置保存在你设备上的 Chrome 扩展本地存储中。发布�
 
 - Chrome 116 或更高版本。
 - 标准的 `youtube.com/watch` 视频页面。
-- Supadata 能够返回的原生字幕。YouTube Digest 会优先请求英文字幕，也可能显示其他可用的原生语言。
+- 直接从已打开的视频标签页读取的 YouTube 原生字幕。YouTube Digest 会优先使用英文字幕，也可能显示其他可用的原生语言。
 - 原文、简体中文和双语对照字幕。
 - 视频画面内英文、中文和双语紧凑字幕，以及自动播放跟随。
 - 句子循环跟读、上下句切换和跟读留白。
@@ -162,9 +153,26 @@ API Key 和设置保存在你设备上的 Chrome 扩展本地存储中。发布�
 
 Shorts、直播、私密视频、受访问限制的视频，以及没有原生字幕的视频可能无法使用。目前没有测试 Firefox、Safari、移动浏览器或其他 Chromium 浏览器。
 
-YouTube Digest 强制使用 Supadata 的 `mode=native`，不会在没有原生字幕时请求 AI 生成转录，也不会在本地转录音频。
+YouTube Digest 不会请求 AI 生成转录，也不会在本地转录音频。视频没有原生字幕时，它会直接告诉你。
 
-## Supadata 免费额度和请求成本
+## 字幕的读取方式
+
+扩展在观看页上运行的 content script 会向播放器请求该视频的字幕轨道，并直接从 YouTube 下载带时间戳的字幕。这个过程不花钱，也不需要 Key。字幕加载期间请保持视频标签页打开。
+
+两种来源返回完全相同的数据结构（即 Supadata 接口的结构），因此下游只需解析一种格式，两条路径也不会各自漂移。
+
+如果视频明明有字幕、但字幕接口返回为空，YouTube Digest 会退而求其次：自动打开 YouTube 自带的“内容转文字”面板并读取其中内容。侧边栏会实时显示进度，长视频最长可能需要一分钟。
+
+同一个视频的字幕最多只获取一次。抓取成功后会立即保存到本地，再次打开该视频时直接复用，不会重新读取页面。字幕缓存 7 天过期，最多保留最近 10 个视频，在设置中点击“清除缓存的摘要”即可删除。
+
+## 可选的 Supadata 降级
+
+Supadata 是一个在自己服务器上解析 YouTube 内部数据的付费服务。它**默认关闭**，只有同时满足以下两个条件才会被调用：
+
+1. 你在设置中勾选了“当无法读取 YouTube 原生字幕时，使用付费的 Supadata 服务”。
+2. 你在同一区块保存了 Supadata API Key。
+
+如需启用，请打开 Supadata 官方[注册页面](https://dash.supadata.ai/auth/sign-up)，完成新手引导，然后在 [Supadata 控制台](https://dash.supadata.ai/)复制生成的 Key 填入 YouTube Digest 设置。如果页面流程发生变化，请查看 [Supadata 官方文档](https://docs.supadata.ai/)。
 
 截至 2026 年 8 月 9 日，[Supadata 价格页面](https://supadata.ai/pricing)显示免费版每月提供 **100 credits**，不需要信用卡，未使用的额度不会结转。价格可能变化，使用前请查看最新页面。
 
@@ -174,11 +182,19 @@ YouTube Digest 强制使用 Supadata 的 `mode=native`，不会在没有原生�
 - AI 生成字幕每分钟消耗 **2 credits**。YouTube Digest 不会使用这条路径，因为它强制使用 `mode=native`。
 - 如果没有可用原生字幕并返回 HTTP `206`，仍会消耗 **1 credit**。
 
-按照当前只获取原生字幕的方式，如果每次请求都成功，免费版每月大约可以查询 100 个视频。重试和没有字幕的查询也会消耗额度，所以实际成功数量可能更少。
+由于降级只会在 YouTube 原生字幕失败后才触发，绝大多数视频不会消耗任何额度。即便如此，仍建议设置消费上限并定期查看用量。
 
-DeepSeek 的额度与 Supadata 分开计算。DeepSeek 可能有自己的免费额度、限速或费用。YouTube Digest 不收款，也不转售 API 服务。建议为两个账号设置消费上限并定期查看用量。下方估算说明了当前 DeepSeek 翻译成本。
+DeepSeek 的额度单独计算。DeepSeek 可能有自己的免费额度、限速或费用。YouTube Digest 不收款，也不转售 API 服务。下方估算说明了当前 DeepSeek 翻译成本。
+
+## 字幕翻译
+
+默认使用 Chrome 内置翻译。它在本机运行模型，所以翻译字幕不产生任何费用，不需要 API Key，也可以离线工作。需要 Chrome 138 或更高版本，首次使用会下载一次语言包，侧边栏会显示下载进度。
+
+你可以在设置中把**字幕翻译**切换为 DeepSeek。DeepSeek 会结合整批上下文翻译，在习语和专业表达上更通顺，代价是下方估算的 token 费用。浏览器翻译失败时**不会**自动改用 DeepSeek：那等于替你花掉你没打算花的钱，也就违背了默认免费的初衷。如果 Chrome 翻译不可用，侧边栏会明确提示并指向该设置项。
 
 ## DeepSeek V4 Flash 翻译成本估算
+
+下面的估算只在你把字幕翻译切换为 DeepSeek 时才适用。
 
 截至 2026 年 8 月 10 日，DeepSeek 官方[价格页面](https://api-docs.deepseek.com/quick_start/pricing/)列出的每 100 万 token 价格是：
 
@@ -216,12 +232,13 @@ YouTube Digest 使用原生 HTML、CSS 和 JavaScript，没有构建步骤，很
 
 YouTube Digest 会直接从扩展向服务商发送请求：
 
-1. 把标准化的 YouTube 视频地址发送给 Supadata，用于获取原生字幕。
+1. 字幕直接从你已经打开的 YouTube 页面读取，不经过任何第三方。
 2. 当你使用 AI 功能时，把字幕和相关视频信息发送给 DeepSeek。
 3. 翻译或讲解等功能只发送当前需要的内容，例如选中的文本和上下文，或少量字幕分段。
 4. API Key、设置、笔记和最近缓存保存在 Chrome 本地。
+5. 只有在你启用了可选的 Supadata 降级、并且 YouTube 原生字幕无法读取时，才会把标准化的 YouTube 视频地址发送给 Supadata。
 
-YouTube Digest 没有账号系统、广告、分析统计或行为追踪。Supadata 和 DeepSeek 仍会按照各自的条款和隐私政策处理数据。详情请查看 [PRIVACY.md](PRIVACY.md)。
+YouTube Digest 没有账号系统、广告、分析统计或行为追踪。DeepSeek，以及你启用后的 Supadata，仍会按照各自的条款和隐私政策处理数据。详情请查看 [PRIVACY.md](PRIVACY.md)。
 
 ## 常见问题
 
@@ -242,15 +259,16 @@ YouTube Digest 没有账号系统、广告、分析统计或行为追踪。Supad
 
 ### YouTube Digest 提示需要设置
 
-- 打开 **Settings**，保存 Supadata Key 和 DeepSeek Key。
+- 打开 **Settings**，保存 DeepSeek Key。字幕不需要任何 Key。
 - 发布版本固定使用 DeepSeek V4 Flash，没有需要填写的 Base URL 或 Model 字段。
 - 如果设置提示旧的自定义服务已移除，请重新填写 DeepSeek Key。旧 AI Key 已安全清除，避免被错误用于 DeepSeek。
 
 ### 找不到字幕
 
 - 确认视频是公开的，并且有原生字幕。
-- 检查 Supadata Key、剩余额度、限速和账号状态。
-- 没有字幕的查询和手动重试也可能消耗额度。
+- 保持 YouTube 视频标签页打开。字幕是从该页面读取的，标签页被关闭或已跳转时会提示“YouTube tab needed”。
+- 如果提示字幕面板没有打开，请在视频下方手动点击“内容转文字”，然后重试。
+- 如果你启用了可选的 Supadata 降级，请检查其 Key、剩余额度、限速和账号状态。没有字幕的查询和手动重试也会消耗额度。
 
 YouTube Digest 不会自动改用 AI 生成字幕。
 

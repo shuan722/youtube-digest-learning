@@ -9,13 +9,25 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "Interface language",
       heading: "Bring your own API keys",
       lede:
-        "Keys stay in this Chrome profile and are sent only to Supadata and DeepSeek. This open-source extension has no developer server or analytics.",
-      transcriptProvider: "Transcript provider",
-      supadataApiKeyLabel: "Supadata API key",
-      supadataHelp: "Used to fetch timestamped YouTube subtitles. ",
+        "Subtitles come from YouTube itself. Your key stays in this Chrome profile and is sent only to DeepSeek. This open-source extension has no developer server or analytics.",
+      transcriptProvider: "Transcript source",
+      nativeTranscriptHelp:
+        "Timestamped subtitles are read from YouTube's own caption track in the open video tab. No key and no cost.",
+      supadataFallbackLabel:
+        "Use the paid Supadata service when YouTube's captions cannot be read",
+      supadataFallbackHelp:
+        "Off by default. Supadata bills per request, so it only runs when this box is ticked and a key is saved below.",
+      supadataApiKeyLabel: "Supadata API key (optional)",
+      supadataHelp: "Only needed for the fallback above. ",
       supadataLink: "Create a Supadata account and key",
       supadataHelpSuffix:
         ". Supadata generates the key during onboarding.",
+      translationProvider: "Transcript translation",
+      translationBrowserLabel:
+        "Chrome's built-in translator (free, on-device)",
+      translationAiLabel: "DeepSeek (costs tokens, tuned for learning)",
+      translationProviderHelp:
+        "Chrome translates the transcript on your device, so it costs nothing and needs no key. It requires Chrome 138 or newer and a one-time model download. DeepSeek reads the whole batch in context, which reads better on idioms and technical wording.",
       aiProvider: "AI provider",
       providerSummaryLabel: "Supported AI provider",
       providerBadge: "Supported in this version",
@@ -57,7 +69,8 @@ const YTD_OPTIONS = (() => {
       migrationWarning:
         "Custom provider settings were removed safely. Your Supadata key was kept, but the AI key was cleared. Enter a DeepSeek API key to continue.",
       saving: "Saving…",
-      addSupadataKey: "Add a Supadata API key.",
+      addSupadataKeyForFallback:
+        "Add a Supadata API key, or turn the fallback off.",
       addDeepseekKey: "Add a DeepSeek API key.",
       saved: "Saved. Reopen YouTube Digest to use these settings.",
       saveFailed: "Could not save settings. Please try again.",
@@ -79,12 +92,23 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "界面语言",
       heading: "使用你自己的 API 密钥",
       lede:
-        "密钥仅保存在当前 Chrome 个人资料中，只会发送给 Supadata 和 DeepSeek。本开源扩展没有开发者服务器，也不使用分析服务。",
-      transcriptProvider: "字幕服务",
-      supadataApiKeyLabel: "Supadata API 密钥",
-      supadataHelp: "用于获取带时间戳的 YouTube 字幕。",
+        "字幕直接来自 YouTube 本身。密钥仅保存在当前 Chrome 个人资料中，只会发送给 DeepSeek。本开源扩展没有开发者服务器，也不使用分析服务。",
+      transcriptProvider: "字幕来源",
+      nativeTranscriptHelp:
+        "带时间戳的字幕直接从已打开的视频标签页中读取 YouTube 原生字幕轨道，无需密钥，也不产生费用。",
+      supadataFallbackLabel:
+        "当无法读取 YouTube 原生字幕时，使用付费的 Supadata 服务",
+      supadataFallbackHelp:
+        "默认关闭。Supadata 按请求计费，只有勾选此项并在下方保存密钥后才会调用。",
+      supadataApiKeyLabel: "Supadata API 密钥（可选）",
+      supadataHelp: "仅在启用上述降级时需要。",
       supadataLink: "创建 Supadata 账号并获取密钥",
       supadataHelpSuffix: "。Supadata 会在引导流程中生成密钥。",
+      translationProvider: "字幕翻译",
+      translationBrowserLabel: "Chrome 内置翻译（免费，本机运行）",
+      translationAiLabel: "DeepSeek（消耗 token，更贴合学习场景）",
+      translationProviderHelp:
+        "Chrome 在本机翻译字幕，不产生费用，也不需要密钥。需要 Chrome 138 或更高版本，首次使用会下载一次语言模型。DeepSeek 会结合整批上下文翻译，在习语和专业表达上更通顺。",
       aiProvider: "AI 服务",
       providerSummaryLabel: "支持的 AI 服务",
       providerBadge: "当前版本支持",
@@ -125,7 +149,7 @@ const YTD_OPTIONS = (() => {
       migrationWarning:
         "已安全移除自定义服务设置。Supadata 密钥已保留，AI 密钥已清除。请输入 DeepSeek API 密钥以继续使用。",
       saving: "正在保存…",
-      addSupadataKey: "请添加 Supadata API 密钥。",
+      addSupadataKeyForFallback: "请添加 Supadata API 密钥，或关闭降级选项。",
       addDeepseekKey: "请添加 DeepSeek API 密钥。",
       saved: "已保存。请重新打开 YouTube Digest 以使用这些设置。",
       saveFailed: "无法保存设置，请重试。",
@@ -350,6 +374,12 @@ const YTD_OPTIONS = (() => {
     const form = doc.getElementById("settingsForm");
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const supadataApiKeyInput = doc.getElementById("supadataApiKey");
+    const allowSupadataFallbackInput = doc.getElementById(
+      "allowSupadataFallback",
+    );
+    const translationProviderInputs = [
+      ...doc.querySelectorAll('input[name="translationProvider"]'),
+    ];
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -422,6 +452,10 @@ const YTD_OPTIONS = (() => {
 
         aiApiKeyInput.value = settings.aiApiKey;
         supadataApiKeyInput.value = settings.supadataApiKey;
+        allowSupadataFallbackInput.checked = settings.allowSupadataFallback;
+        for (const input of translationProviderInputs) {
+          input.checked = input.value === settings.translationProvider;
+        }
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
@@ -447,10 +481,16 @@ const YTD_OPTIONS = (() => {
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
         supadataApiKey: supadataApiKeyInput.value,
+        allowSupadataFallback: allowSupadataFallbackInput.checked,
+        translationProvider: translationProviderInputs.find(
+          (input) => input.checked,
+        )?.value,
       });
 
-      if (!settings.supadataApiKey) {
-        setStatus(saveStatus, "addSupadataKey");
+      // The Supadata key is optional, but an enabled fallback without one
+      // would silently never fire.
+      if (settings.allowSupadataFallback && !settings.supadataApiKey) {
+        setStatus(saveStatus, "addSupadataKeyForFallback");
         return;
       }
       if (!settings.aiApiKey) {
@@ -481,9 +521,15 @@ const YTD_OPTIONS = (() => {
 
     async function clearCachedDigests() {
       const all = await storage.get(null);
-      const keys = Object.keys(all).filter((key) => key.startsWith("digest_"));
+      // Cached transcripts live under their own prefix, but users think of
+      // them as part of the same cached digest.
+      const keys = Object.keys(all).filter(
+        (key) => key.startsWith("digest_") || key.startsWith("transcript_"),
+      );
       if (keys.length) await storage.remove(keys);
-      setStatus(dataStatus, "clearedDigests", { count: keys.length });
+      // Report videos cleared, not keys: each video owns two of them.
+      const videoCount = keys.filter((key) => key.startsWith("digest_")).length;
+      setStatus(dataStatus, "clearedDigests", { count: videoCount });
     }
 
     async function clearNotes() {

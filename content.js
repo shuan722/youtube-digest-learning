@@ -173,6 +173,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.action === "extractTranscript") {
+    // Reads YouTube's own captions and answers in Supadata's payload shape.
+    extractTranscriptPayload()
+      .then(sendResponse)
+      .catch((error) =>
+        sendResponse({
+          success: false,
+          error: "EXTRACTION_FAILED",
+          message: error?.message || "Could not read this video's captions.",
+        }),
+      );
+    return true; // Keep the channel open for the async response.
+  }
+
   // Unknown action - still send a response to prevent hanging
   debugLog("[YouTube Digest Content] Unknown action:", message.action);
   sendResponse({ success: false, error: "Unknown action" });
@@ -343,7 +357,16 @@ async function toggleInlineDigest() {
   });
   const videoId = new URL(location.href).searchParams.get("v") || "";
   compactDigestVideoId = videoId;
-  const result = await chrome.runtime.sendMessage({ action: "getCompactTranscriptData", videoId });
+  // A rejection here used to abort this function and freeze the overlay on its
+  // placeholder text forever. Treat it like a cache miss and let the retry
+  // timer recover: it happens whenever the extension is reloaded underneath a
+  // still-open tab.
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({ action: "getCompactTranscriptData", videoId });
+  } catch (error) {
+    console.warn("[YouTube Digest] Compact transcript unavailable:", error?.message);
+  }
   if (!result?.success) {
     container.querySelector(".ytd-digest-overlay-status").textContent = "正在等待右侧字幕…";
     container.querySelector(".ytd-digest-overlay-en").textContent = "字幕生成后会自动显示，无需重新打开。";
@@ -483,12 +506,15 @@ function updateCompactLoopControls() {
 async function refreshCompactDigestCache() {
   if (!compactDigestVideoId || !inlineDigestContainer?.isConnected) return;
   compactDigestLastCacheRefresh = Date.now();
+  const videoIdAtRequest = compactDigestVideoId;
   try {
     const result = await chrome.runtime.sendMessage({
       action: "getCompactTranscriptData",
-      videoId: compactDigestVideoId,
+      videoId: videoIdAtRequest,
     });
     if (!result?.success) return;
+    // The user may have navigated to another video while this was in flight.
+    if (compactDigestVideoId !== videoIdAtRequest) return;
     const source = result.compactSegments?.length
       ? result.compactSegments
       : (result.transcript || []).map((item, index) => ({ id: `raw-${index}`, start: Number(item.start) || 0, text: item.text || "" }));
@@ -1083,3 +1109,486 @@ document.addEventListener("yt-navigate-finish", () => {
     tryInjectNoteButton();
   }, 500);
 });
+
+// ============================================================
+// TRANSCRIPT EXTRACTION
+// ============================================================
+//
+// Both transcript sources hand the background the same payload, which is the
+// shape Supadata's API returns:
+//
+//   { content: [{ text, offset, duration, lang }], lang, availableLangs }
+//
+// offset and duration are milliseconds. Nothing downstream needs to know
+// whether YouTube's own captions or Supadata produced it.
+
+// This extension is an English intensive-reading tool, so an English track
+// beats a translated one, and a human-written track beats auto-generated.
+const CAPTION_LANGUAGE_PREFERENCE = ["en"];
+
+const TRANSCRIPT_PANEL_TIMEOUT_MS = 90_000;
+const TRANSCRIPT_PANEL_POLL_MS = 700;
+const TRANSCRIPT_PANEL_STABLE_ROUNDS = 3;
+const TRANSCRIPT_LAST_CHUNK_MS = 3000;
+
+const BRIDGE_REQUEST_EVENT = "ytd-digest-bridge-request";
+const BRIDGE_RESPONSE_EVENT = "ytd-digest-bridge-response";
+const BRIDGE_TIMEOUT_MS = 4000;
+
+let pageBridgeInstalled = false;
+
+const transcriptSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const cleanCaptionText = (value) =>
+  String(value ?? "")
+    .replace(/​/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** Keeps the side panel's loading view honest while a slow read runs. */
+function reportTranscriptProgress(subtitle) {
+  chrome.runtime
+    .sendMessage({
+      action: "transcriptProgress",
+      title: "Fetching transcript",
+      subtitle,
+    })
+    .catch(() => {});
+}
+
+/**
+ * Asks the page world for the current video's caption tracks, injecting the
+ * bridge on first use. Resolves to null when the page never answers.
+ */
+function requestCaptionTracks() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener(BRIDGE_RESPONSE_EVENT, onResponse);
+      resolve(value);
+    };
+    const onResponse = (event) => {
+      try {
+        finish(JSON.parse(event.detail));
+      } catch (error) {
+        finish(null);
+      }
+    };
+
+    window.addEventListener(BRIDGE_RESPONSE_EVENT, onResponse);
+    if (pageBridgeInstalled) {
+      window.dispatchEvent(new CustomEvent(BRIDGE_REQUEST_EVENT));
+    } else {
+      const script = document.createElement("script");
+      script.src = chrome.runtime.getURL("page-bridge.js");
+      script.onload = () => script.remove();
+      script.onerror = () => finish(null);
+      (document.head ?? document.documentElement).appendChild(script);
+      pageBridgeInstalled = true;
+    }
+    setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
+  });
+}
+
+function pickCaptionTrack(tracks) {
+  const speaks = (track, code) =>
+    String(track.languageCode || "")
+      .toLowerCase()
+      .startsWith(code);
+  for (const code of CAPTION_LANGUAGE_PREFERENCE) {
+    const track =
+      tracks.find((item) => speaks(item, code) && item.kind !== "asr") ??
+      tracks.find((item) => speaks(item, code));
+    if (track) return track;
+  }
+  return tracks.find((item) => item.kind !== "asr") ?? tracks[0];
+}
+
+/** Downloads one caption track as Supadata-shaped chunks. */
+async function fetchCaptionTrackChunks(track) {
+  if (!track?.baseUrl) return [];
+  try {
+    const captionUrl = new URL(track.baseUrl, location.origin);
+    captionUrl.searchParams.set("fmt", "json3");
+    const response = await fetch(captionUrl.href, { credentials: "include" });
+    if (!response.ok) return [];
+    const raw = await response.text();
+    if (!raw.trim()) return [];
+    return (JSON.parse(raw).events ?? [])
+      .filter((event) => Array.isArray(event.segs))
+      .map((event) => ({
+        text: cleanCaptionText(event.segs.map((seg) => seg.utf8 ?? "").join("")),
+        offset: Number(event.tStartMs) || 0,
+        duration: Number(event.dDurationMs) || 0,
+        lang: track.languageCode || "",
+      }))
+      .filter((chunk) => chunk.text);
+  } catch (error) {
+    debugLog("[YouTube Digest Content] Caption fetch failed:", error.message);
+    return [];
+  }
+}
+
+// ---- Transcript panel fallback ------------------------------------------
+
+const TRANSCRIPT_STAMP = /^(?:\d{1,2}:)?\d{1,2}:\d{2}$/;
+// Timestamps also appear on the player clock, related-video badges, and
+// comment permalinks. None of those belong to a transcript.
+const TRANSCRIPT_EXCLUDE = [
+  "#movie_player",
+  "#related",
+  "ytd-watch-next-secondary-results-renderer",
+  "#comments",
+  "ytd-compact-video-renderer",
+  "ytd-thumbnail-overlay-time-status-renderer",
+  "#ytd-digest-inline",
+].join(", ");
+
+const isTranscriptStampLeaf = (el) =>
+  !el.firstElementChild && TRANSCRIPT_STAMP.test((el.textContent || "").trim());
+
+/**
+ * Finds the transcript rows without trusting any element name or container.
+ *
+ * YouTube renames these custom elements and moves the panel between hosts, and
+ * the element carrying target-id="engagement-panel-searchable-transcript" can
+ * sit hidden and empty while a different one renders the real rows. So collect
+ * every timestamp label on the page and keep the largest group of sibling
+ * rows: a transcript holds far more of them than anything else does.
+ */
+function findTranscriptRows() {
+  const legacy = document.querySelectorAll("ytd-transcript-segment-renderer");
+  if (legacy.length) return [...legacy];
+
+  const groups = new Map();
+  for (const stamp of document.querySelectorAll("*")) {
+    if (!isTranscriptStampLeaf(stamp) || stamp.closest(TRANSCRIPT_EXCLUDE)) continue;
+    const stampLength = (stamp.textContent || "").trim().length;
+
+    // Walk up to the row: the nearest ancestor that adds caption text without
+    // swallowing a second timestamp.
+    let node = stamp.parentElement;
+    let row = null;
+    while (node && node !== document.body) {
+      if ([...node.querySelectorAll("*")].filter(isTranscriptStampLeaf).length > 1) break;
+      if ((node.textContent || "").trim().length > stampLength + 1) {
+        row = node;
+        break;
+      }
+      node = node.parentElement;
+    }
+    if (!row?.parentElement) continue;
+    const siblings = groups.get(row.parentElement) ?? [];
+    if (!siblings.includes(row)) siblings.push(row);
+    groups.set(row.parentElement, siblings);
+  }
+
+  let best = [];
+  for (const siblings of groups.values()) {
+    if (siblings.length > best.length) best = siblings;
+  }
+  // One or two stray matches are a clock or a badge, not a transcript.
+  return best.length >= 3 ? best : [];
+}
+
+function isTranscriptElementVisible(el) {
+  if (!el) return false;
+  const style = getComputedStyle(el);
+  return (
+    style.display !== "none" &&
+    style.visibility !== "hidden" &&
+    el.getClientRects().length > 0
+  );
+}
+
+/**
+ * Opens YouTube's own transcript panel, retrying because the description has
+ * to expand before the button renders and the panel loads lazily.
+ */
+async function openTranscriptPanel() {
+  const labels = [
+    "show transcript",
+    "open transcript",
+    "内容转文字",
+    "內容轉文字",
+    "显示文字记录",
+    "顯示文字記錄",
+    "显示转录内容",
+    "顯示轉錄內容",
+    "查看文字记录",
+    "查看文字記錄",
+    "转写文稿",
+    "轉寫文稿",
+  ];
+
+  const expandDescription = () => {
+    const expander = [
+      "ytd-watch-metadata #description-inline-expander #expand",
+      "ytd-watch-metadata ytd-text-inline-expander #expand",
+      "#description-inline-expander #expand",
+      "tp-yt-paper-button#expand",
+      "ytd-watch-metadata #expand",
+    ]
+      .map((selector) => document.querySelector(selector))
+      .find(isTranscriptElementVisible);
+    if (expander) expander.click();
+  };
+
+  const clickTranscriptButton = () => {
+    const direct = [
+      "ytd-video-description-transcript-section-renderer #show-transcript",
+      "ytd-video-description-transcript-section-renderer button",
+      "ytd-video-description-transcript-section-renderer tp-yt-paper-button",
+    ]
+      .map((selector) => document.querySelector(selector))
+      .find(isTranscriptElementVisible);
+    const byLabel = [
+      ...document.querySelectorAll(
+        "button, tp-yt-paper-button, ytd-button-renderer, yt-button-shape, tp-yt-paper-item, ytd-menu-service-item-renderer",
+      ),
+    ].find((candidate) => {
+      if (!isTranscriptElementVisible(candidate)) return false;
+      const label = cleanCaptionText(
+        `${candidate.getAttribute("aria-label") ?? ""} ${candidate.textContent ?? ""}`,
+      ).toLowerCase();
+      return labels.some((text) => label.includes(text));
+    });
+    const button = direct ?? byLabel;
+    if (!button) return false;
+    (button.querySelector?.("button") ?? button).click();
+    return true;
+  };
+
+  // Last resort: flip the engagement panel open ourselves. Polymer reflects
+  // this property, so assigning it renders the panel even when no button for
+  // it is reachable.
+  const forcePanelOpen = () => {
+    const panels = document.querySelectorAll(
+      '[target-id="engagement-panel-searchable-transcript"]',
+    );
+    for (const panel of panels) {
+      try {
+        panel.visibility = "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED";
+      } catch (error) {
+        // Not Polymer-backed; the attribute below still applies.
+      }
+      panel.setAttribute("visibility", "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED");
+    }
+    return panels.length > 0;
+  };
+
+  if (findTranscriptRows().length) return "already-open";
+
+  expandDescription();
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (clickTranscriptButton()) {
+      await transcriptSleep(400);
+      if (findTranscriptRows().length) return "button";
+    }
+    if (attempt === 3) expandDescription();
+    if (attempt === 6 && forcePanelOpen()) {
+      await transcriptSleep(600);
+      if (findTranscriptRows().length) return "forced";
+    }
+    await transcriptSleep(400);
+  }
+  return findTranscriptRows().length ? "late" : "unopened";
+}
+
+function transcriptTimestampToMs(value) {
+  const parts = String(value ?? "")
+    .trim()
+    .split(":")
+    .map(Number);
+  if (parts.length < 2 || parts.some((part) => !Number.isFinite(part))) return null;
+  return parts.reduce((total, part) => total * 60 + part, 0) * 1000;
+}
+
+/**
+ * Scrolls the virtualized transcript panel and reads every row.
+ * The panel only keeps the visible slice in the DOM, so this has to walk it.
+ */
+async function collectTranscriptPanelChunks(languageCode) {
+  const collected = new Map();
+  const collect = () => {
+    for (const row of findTranscriptRows()) {
+      const raw = cleanCaptionText(row.textContent);
+      const stamp =
+        cleanCaptionText(
+          row.querySelector("#segment-timestamp, .segment-timestamp")?.textContent,
+        ) ||
+        cleanCaptionText(
+          [...row.querySelectorAll("*")].find(isTranscriptStampLeaf)?.textContent,
+        ) ||
+        raw.match(/(?:^|\s)((?:\d{1,2}:)?\d{1,2}:\d{2})(?:\s|$)/)?.[1] ||
+        "";
+      const offset = transcriptTimestampToMs(stamp);
+      if (offset === null) continue;
+      const text = cleanCaptionText(
+        row.querySelector("#segment-text, .segment-text")?.textContent ??
+          raw.replace(stamp, ""),
+      );
+      if (text) collected.set(`${offset}:${text}`, { offset, text });
+    }
+  };
+
+  collect();
+  const first = findTranscriptRows()[0];
+  if (!first) return [];
+
+  const panel =
+    first.closest(
+      "ytd-engagement-panel-section-list-renderer, ytd-transcript-renderer",
+    ) ?? first.parentElement;
+  const candidates = [];
+  let ancestor = first.parentElement;
+  while (ancestor && ancestor !== document.body) {
+    candidates.push(ancestor);
+    ancestor = ancestor.parentElement;
+  }
+  if (panel) candidates.push(...panel.querySelectorAll("*"));
+  const scroller = candidates
+    .filter(
+      (el) =>
+        /(auto|scroll)/.test(getComputedStyle(el).overflowY) &&
+        el.scrollHeight > el.clientHeight + 20,
+    )
+    .sort(
+      (a, b) =>
+        b.scrollHeight - b.clientHeight - (a.scrollHeight - a.clientHeight),
+    )[0];
+
+  if (scroller) {
+    const originalTop = scroller.scrollTop;
+    scroller.scrollTop = 0;
+    await transcriptSleep(150);
+    let unchanged = 0;
+    let previousSize = -1;
+    for (let round = 0; round < 400; round += 1) {
+      collect();
+      unchanged = collected.size === previousSize ? unchanged + 1 : 0;
+      previousSize = collected.size;
+      if (round % 4 === 0) {
+        reportTranscriptProgress(`Collecting captions: ${collected.size} lines`);
+      }
+      const atBottom =
+        scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+      if (atBottom && unchanged >= 3) break;
+      scroller.scrollTop = Math.min(
+        scroller.scrollTop + Math.max(scroller.clientHeight * 0.8, 300),
+        scroller.scrollHeight,
+      );
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await transcriptSleep(110);
+    }
+    scroller.scrollTop = originalTop;
+  } else {
+    await transcriptSleep(800);
+    collect();
+  }
+
+  // The panel gives no durations, so derive each one from the next start.
+  const rows = [...collected.values()].sort((a, b) => a.offset - b.offset);
+  return rows.map((row, index) => ({
+    text: row.text,
+    offset: row.offset,
+    duration: rows[index + 1]
+      ? Math.max(0, rows[index + 1].offset - row.offset)
+      : TRANSCRIPT_LAST_CHUNK_MS,
+    lang: languageCode || "",
+  }));
+}
+
+// ---- Orchestration ------------------------------------------------------
+
+/**
+ * Reads this video's transcript and returns it in Supadata's payload shape.
+ * Tries YouTube's caption track first, then its transcript panel.
+ */
+async function extractTranscriptPayload() {
+  reportTranscriptProgress("Reading YouTube captions");
+  const page = await requestCaptionTracks();
+  const tracks = Array.isArray(page?.tracks) ? page.tracks : [];
+  const availableLangs = [
+    ...new Set(tracks.map((track) => track.languageCode).filter(Boolean)),
+  ];
+
+  let languageCode = "";
+  if (tracks.length) {
+    const track = pickCaptionTrack(tracks);
+    languageCode = track?.languageCode || "";
+    const chunks = await fetchCaptionTrackChunks(track);
+    if (chunks.length) {
+      return {
+        success: true,
+        via: "caption-api",
+        payload: { content: chunks, lang: languageCode, availableLangs },
+      };
+    }
+  } else if (page) {
+    // The player answered and reported no tracks at all.
+    return {
+      success: false,
+      error: "NO_TRANSCRIPT",
+      message: "This video has no subtitle track.",
+    };
+  }
+
+  // The caption endpoint sometimes returns nothing even though captions
+  // exist. YouTube's own transcript panel still renders them, so read that.
+  reportTranscriptProgress("Opening YouTube's transcript panel");
+  const via = await openTranscriptPanel();
+  debugLog("[YouTube Digest Content] Transcript panel:", via);
+
+  const startedAt = Date.now();
+  const limitSeconds = Math.round(TRANSCRIPT_PANEL_TIMEOUT_MS / 1000);
+  let count = 0;
+  let stable = 0;
+  let previous = -1;
+  while (Date.now() - startedAt < TRANSCRIPT_PANEL_TIMEOUT_MS) {
+    count = findTranscriptRows().length;
+    stable = count > 0 && count === previous ? stable + 1 : 0;
+    previous = count;
+    reportTranscriptProgress(
+      count
+        ? `Reading the transcript panel: ${count} lines`
+        : `Waiting for YouTube's transcript panel (${Math.round((Date.now() - startedAt) / 1000)}s of ${limitSeconds}s)`,
+    );
+    if (stable >= TRANSCRIPT_PANEL_STABLE_ROUNDS) break;
+    await transcriptSleep(TRANSCRIPT_PANEL_POLL_MS);
+  }
+
+  if (!count) {
+    return {
+      success: false,
+      error: "TRANSCRIPT_PANEL_UNAVAILABLE",
+      message:
+        "Could not open YouTube's transcript panel. Click “Show transcript” under the video, then try again.",
+    };
+  }
+
+  reportTranscriptProgress(`Collecting captions: ${count} lines`);
+  const chunks = await collectTranscriptPanelChunks(languageCode);
+  if (!chunks.length) {
+    return {
+      success: false,
+      error: "EMPTY_TRANSCRIPT",
+      message: "YouTube's transcript panel opened but produced no text.",
+    };
+  }
+
+  return {
+    success: true,
+    via: "transcript-panel",
+    payload: { content: chunks, lang: languageCode, availableLangs },
+  };
+}
+
+// Pure transcript helpers are exposed for the repository's Node tests only.
+globalThis.__YTD_CONTENT_TRANSCRIPT_TESTING__ = {
+  findTranscriptRows,
+  pickCaptionTrack,
+  transcriptTimestampToMs,
+};

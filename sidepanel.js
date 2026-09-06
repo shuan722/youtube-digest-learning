@@ -21,6 +21,9 @@ let currentTranscript = null;
 let currentTranscriptText = null; // Plain text (for display/export)
 let currentTranscriptTimestamped = null; // With timestamps for AI analysis
 let currentTranscriptLanguage = null;
+// Which translator handles the transcript. Mirrors the saved setting; the
+// browser's on-device model is the default because it costs nothing.
+let currentTranslationProvider = "browser";
 let currentVideoTitle = "";
 let currentChannelName = "";
 let currentVideoDescription = "";
@@ -154,7 +157,7 @@ function splitOversizedThought(text, maxChars) {
 /**
  * Reconstructs complete sentences across raw caption boundaries. Each segment
  * keeps the timestamp of the first caption that contributed text. Character
- * and time limits prevent a malformed Supadata entry from becoming one giant
+ * and time limits prevent a malformed transcript entry from becoming one giant
  * row while punctuation remains the preferred boundary.
  */
 function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
@@ -261,9 +264,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   const configStatus = await chrome.runtime.sendMessage({
     action: "checkConfig",
   });
+  currentTranslationProvider =
+    configStatus.translationProvider === "ai" ? "ai" : "browser";
 
-  if (!configStatus.hasSupadataKey || !configStatus.hasAiKey) {
-    showConfigError(configStatus);
+  // Transcripts come from YouTube's own captions now, so the DeepSeek key is
+  // the only thing the panel cannot start without.
+  if (!configStatus.hasAiKey) {
+    showConfigError();
     return;
   }
 
@@ -313,6 +320,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 //
 // Everything is scoped to the window this panel lives in: tab switches in
 // OTHER browser windows must not close this panel or hijack its content.
+
+window.addEventListener("pagehide", () => YTD_TRANSLATOR.dispose());
 
 let navigationRefreshTimer = null;
 let panelWindowId = null;
@@ -665,15 +674,14 @@ async function startDigest(videoId, videoUrl) {
   });
 
   if (!transcriptResult.success) {
-    if (transcriptResult.error === "NO_SUPADATA_KEY") {
-      showError(
-        "API key missing",
-        "Add your Supadata API key in YouTube Digest Settings.",
-      );
-      return;
-    }
+    const TRANSCRIPT_ERROR_TITLES = {
+      NO_YOUTUBE_TAB: "YouTube tab needed",
+      TRANSCRIPT_PANEL_UNAVAILABLE: "Transcript panel did not open",
+      NO_TRANSCRIPT: "No subtitles for this video",
+      EMPTY_TRANSCRIPT: "Empty transcript",
+    };
     showError(
-      "No transcript found",
+      TRANSCRIPT_ERROR_TITLES[transcriptResult.error] || "No transcript found",
       transcriptResult.message || transcriptResult.error,
     );
     return;
@@ -1172,15 +1180,11 @@ function showError(title, message) {
   document.getElementById("errorBtn").textContent = "Try Again";
 }
 
-function showConfigError(configStatus) {
-  const missingKeys = [];
-  if (!configStatus.hasSupadataKey) missingKeys.push("Supadata");
-  if (!configStatus.hasAiKey) missingKeys.push("AI provider");
-
+function showConfigError() {
   showState("error");
-  document.getElementById("errorTitle").textContent = "API Keys Missing";
+  document.getElementById("errorTitle").textContent = "API Key Missing";
   document.getElementById("errorMessage").textContent =
-    `Add your ${missingKeys.join(" and ")} API key${missingKeys.length === 1 ? "" : "s"} in YouTube Digest Settings.`;
+    "Add your AI provider API key in YouTube Digest Settings.";
   document.getElementById("errorBtn").textContent = "Open Settings";
   errorAction = () => chrome.runtime.sendMessage({ action: "openOptions" });
 }
@@ -2053,7 +2057,7 @@ function exportVocabularyCsv() {
 /**
  * Saves the current digest results to persistent local storage.
  * Results survive browser restarts — reopening the same video loads from cache
- * without consuming API tokens or Supadata calls.
+ * without consuming API tokens or refetching the transcript.
  * Cache expires after 30 days. Oldest entries evicted when > 20 videos cached.
  */
 async function saveToCache(videoId) {
@@ -2631,6 +2635,52 @@ function updateTranslatedRow(segment, index, alignedItem, generation) {
 
 let activeTranslationQueue = null;
 
+const BROWSER_TRANSLATION_ERRORS = {
+  UNSUPPORTED:
+    "Chrome's built-in translator is unavailable here. Update Chrome, or switch the translator to DeepSeek in Settings.",
+  MODEL_NOT_READY:
+    "Chrome is still downloading its translation model. Retry in a moment, or switch the translator to DeepSeek in Settings.",
+  SAME_LANGUAGE: "This transcript is already in Chinese.",
+};
+
+/**
+ * Runs one batch through whichever translator the user chose.
+ *
+ * Chrome's on-device translator is the default because it is free. A failure
+ * is never retried against DeepSeek automatically: that would spend tokens the
+ * user did not ask to spend, which is the point of preferring the browser.
+ */
+async function translateSegmentBatch(sourceBatch) {
+  const payload = sourceBatch.map(({ id, text }) => ({ id, text }));
+
+  if (currentTranslationProvider === "browser") {
+    if (!YTD_TRANSLATOR.isSupported()) {
+      return { success: false, error: BROWSER_TRANSLATION_ERRORS.UNSUPPORTED };
+    }
+    const result = await YTD_TRANSLATOR.translateSegments(payload, {
+      sourceLanguage: currentTranscriptLanguage,
+      onDownloadProgress: () =>
+        setTranslationStatus("Downloading Chrome's translation model…"),
+    });
+    if (result.success) {
+      setTranslationStatus("");
+      return result;
+    }
+    return {
+      success: false,
+      error: BROWSER_TRANSLATION_ERRORS[result.error] || "Translation failed.",
+    };
+  }
+
+  return sendTranslationMessage({
+    action: "translateContent",
+    content: { segments: payload },
+    contentType: "transcriptBatch",
+    targetLanguage: "zh",
+    videoTitle: currentVideoTitle,
+  });
+}
+
 async function requestTranscriptTranslationBatch(
   indices,
   segments,
@@ -2641,15 +2691,7 @@ async function requestTranscriptTranslationBatch(
   const sourceBatch = indices.map((index) => segments[index]);
   setTranslatingSpinner(true);
   try {
-    const result = await sendTranslationMessage({
-      action: "translateContent",
-      content: {
-        segments: sourceBatch.map(({ id, text }) => ({ id, text })),
-      },
-      contentType: "transcriptBatch",
-      targetLanguage: "zh",
-      videoTitle: currentVideoTitle,
-    });
+    const result = await translateSegmentBatch(sourceBatch);
 
     const isStale =
       generation !== translationGeneration ||
@@ -2780,6 +2822,22 @@ async function translateTranscript() {
     if (!row.classList.contains("translated")) transcriptScrollObserver.observe(row);
     if (index < 3) enqueue(index);
   });
+}
+
+/**
+ * Shows a transient note on the transcript source badge, such as Chrome
+ * downloading its translation model. Passing "" restores the badge.
+ */
+function setTranslationStatus(text) {
+  const badge = document.getElementById("transcriptSourceBadge");
+  if (!badge) return;
+  if (text) {
+    badge.dataset.restoreHtml ??= badge.innerHTML;
+    badge.textContent = text;
+  } else if (badge.dataset.restoreHtml !== undefined) {
+    badge.innerHTML = badge.dataset.restoreHtml;
+    delete badge.dataset.restoreHtml;
+  }
 }
 
 function setTranslatingSpinner(show) {

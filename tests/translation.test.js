@@ -24,7 +24,17 @@ function loadSidepanelHelpers({
     clearInterval() {},
     IntersectionObserver: class {},
     CSS: { escape: (value) => value },
-    window: { getSelection: () => null, close() {} },
+    window: {
+      getSelection: () => null,
+      close() {},
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    YTD_TRANSLATOR: {
+      isSupported: () => false,
+      dispose() {},
+      translateSegments: async () => ({ success: false, error: "UNSUPPORTED" }),
+    },
     document: {
       addEventListener() {},
       querySelectorAll: () => [],

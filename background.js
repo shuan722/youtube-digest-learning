@@ -3,7 +3,7 @@
  *
  * This is the "brain" of the extension. It runs in the background and handles:
  * 1. Opening the side panel when the user clicks the extension icon
- * 2. Fetching YouTube transcripts via Supadata API
+ * 2. Fetching YouTube transcripts from the page's native captions
  * 3. Calling DeepSeek to analyze the transcript
  * 4. Sending results back to the side panel
  *
@@ -399,8 +399,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getSettings()
       .then((settings) =>
         sendResponse({
+          // Transcripts come from YouTube itself, so only the AI key gates
+          // the panel. Supadata is reported for the settings hint only.
           hasSupadataKey: !!settings.supadataApiKey,
+          supadataFallbackEnabled:
+            settings.allowSupadataFallback && !!settings.supadataApiKey,
           hasAiKey: !!settings.aiApiKey,
+          translationProvider: settings.translationProvider,
         }),
       )
       .catch((error) => sendResponse({ error: error.message }));
@@ -414,8 +419,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const stored = await chrome.storage.local.get(null);
       const cached = stored[`digest_${videoId}`];
       if (!cached?.transcript?.length) return sendResponse({ success: false, error: "NOT_CACHED" });
+      // Must match the key runSmartReading() writes in sidepanel.js. A stale
+      // prefix here silently returns no learning items, so the in-player
+      // overlay loses its intensive-reading highlights.
       const learningKey = Object.keys(stored)
-        .filter((key) => key.startsWith(`learning_v4_${videoId}_`))
+        .filter((key) => key.startsWith(`learning_v5_${videoId}_`))
         .sort((a, b) => String(stored[b]?.createdAt || "").localeCompare(String(stored[a]?.createdAt || "")))[0];
       sendResponse({
         success: true,
@@ -689,156 +697,282 @@ async function getPlayerVideoDetails(tabId) {
 }
 
 // ============================================================
-// TRANSCRIPT FETCHING VIA SUPADATA API
+// TRANSCRIPT FETCHING
+//
+// Two sources, one payload. content.js reads YouTube's own captions inside the
+// watch tab and answers in exactly the shape Supadata's API returns:
+//
+//   { content: [{ text, offset, duration, lang }], lang, availableLangs }
+//
+// So buildTranscriptResult below parses one structure either way, and nothing
+// downstream knows or cares which source answered.
+//
+// Supadata remains available as a fallback, but only when the user ticks the
+// opt-in in Settings. It bills per request, so it must never fire on its own.
 // ============================================================
 
-/**
- * Fetches the transcript for a YouTube video using Supadata API.
- *
- * Supadata is a specialized service that reliably extracts transcripts
- * from YouTube videos. It handles all the complexity of parsing YouTube's
- * internal data structures, dealing with different caption formats, etc.
- *
- * API Docs: https://docs.supadata.ai
- *
- * @param {string} videoId - The YouTube video ID (e.g., "dQw4w9WgXcQ")
- * @returns {Object} - { success, transcript, transcriptText, language } or { success: false, error }
- */
-async function handleFetchTranscript(videoId) {
+// Reading captions out of the page can take a minute on long videos, so a
+// successful fetch is persisted immediately and reused on every later visit.
+// This cache is independent of the side panel's digest cache: it survives a
+// panel that was closed before the analysis pipeline finished.
+const TRANSCRIPT_CACHE_PREFIX = "transcript_";
+const TRANSCRIPT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const TRANSCRIPT_CACHE_MAX_ENTRIES = 10;
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Returns the stored transcript for this video, or null when there isn't a usable one. */
+async function readCachedTranscript(videoId) {
   try {
-    const settings = await getSettings();
-    if (!settings.supadataApiKey) {
-      return {
-        success: false,
-        error: "NO_SUPADATA_KEY",
-        message: "Supadata API key not configured. Open YouTube Digest Settings.",
-      };
+    const key = TRANSCRIPT_CACHE_PREFIX + videoId;
+    const stored = await chrome.storage.local.get(key);
+    const entry = stored[key];
+    if (!entry?.savedAt || !entry.result?.transcript?.length) return null;
+    if (Date.now() - entry.savedAt > TRANSCRIPT_CACHE_TTL_MS) {
+      await chrome.storage.local.remove(key);
+      return null;
     }
+    return { ...entry.result, fromCache: true };
+  } catch (error) {
+    debugLog("[YouTube Digest] Transcript cache read failed:", error.message);
+    return null;
+  }
+}
 
-    // Share only the canonical watch URL. This strips playlist, referral,
-    // timestamp, and other browsing parameters from the active tab URL.
-    const canonicalVideoUrl = YTD_SETTINGS.canonicalYouTubeUrl(videoId);
-    // Using the universal transcript endpoint with text=false to get timestamped chunks
-    const apiUrl = new URL("https://api.supadata.ai/v1/transcript");
-    apiUrl.searchParams.set("url", canonicalVideoUrl);
-    apiUrl.searchParams.set("text", "false"); // Get timestamped chunks, not plain text
-    apiUrl.searchParams.set("lang", "en"); // Prefer English
-    // Caption-only product scope: never fall back to paid AI transcription.
-    apiUrl.searchParams.set("mode", "native");
-
-    // Make the API request
-    const response = await fetch(apiUrl.toString(), {
-      method: "GET",
-      headers: {
-        "x-api-key": settings.supadataApiKey,
-      },
+async function writeCachedTranscript(videoId, result) {
+  try {
+    await chrome.storage.local.set({
+      [TRANSCRIPT_CACHE_PREFIX + videoId]: { savedAt: Date.now(), result },
     });
 
-    // Handle async jobs (for videos > 20 minutes, Supadata returns a job ID)
-    if (response.status === 202) {
-      const jobData = await response.json();
-      // Poll for the result
-      return await pollTranscriptJob(jobData.jobId, settings.supadataApiKey);
-    }
+    // Transcripts are large, so keep only the most recent handful.
+    const stored = await chrome.storage.local.get(null);
+    const stale = Object.keys(stored)
+      .filter((key) => key.startsWith(TRANSCRIPT_CACHE_PREFIX))
+      .sort((a, b) => (stored[b]?.savedAt || 0) - (stored[a]?.savedAt || 0))
+      .slice(TRANSCRIPT_CACHE_MAX_ENTRIES);
+    if (stale.length) await chrome.storage.local.remove(stale);
+  } catch (error) {
+    debugLog("[YouTube Digest] Transcript cache write failed:", error.message);
+  }
+}
 
-    if (response.status === 206) {
+/**
+ * Tells the side panel what the transcript fetch is doing. The DOM fallback
+ * can take a minute on long videos, so silence would look like a hang.
+ * Nothing is listening when the panel is closed — that rejection is expected.
+ */
+function reportTranscriptProgress(title, subtitle = "") {
+  chrome.runtime
+    .sendMessage({ action: "transcriptProgress", title, subtitle })
+    .catch(() => {});
+}
+
+/** Extracts the video ID from a YouTube URL, or "" when there isn't one. */
+function videoIdFromUrl(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl || "");
+  } catch (e) {
+    return "";
+  }
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  if (host !== "youtube.com" && !host.endsWith(".youtube.com")) return "";
+  const videoId =
+    url.pathname === "/watch"
+      ? url.searchParams.get("v") || ""
+      : url.pathname.match(/^\/(?:shorts|live|embed)\/([^/?]+)/)?.[1] || "";
+  return /^[A-Za-z0-9_-]{6,20}$/.test(videoId) ? videoId : "";
+}
+
+/**
+ * Finds the open tab showing this video. Native captions only exist inside a
+ * loaded watch page, so without a tab there is nothing to read.
+ */
+async function findYouTubeTabId(videoId) {
+  const tabs = await chrome.tabs.query({ url: "https://www.youtube.com/*" });
+  const matches = tabs.filter((tab) => videoIdFromUrl(tab.url) === videoId);
+  if (!matches.length) return null;
+  return (matches.find((tab) => tab.active) ?? matches[0]).id ?? null;
+}
+
+// ---- Orchestration ------------------------------------------------------
+
+/**
+ * Turns a transcript payload into the shape the rest of the extension speaks.
+ *
+ * @param {Object} payload - { content: [{ text, offset, duration, lang }], lang, availableLangs }
+ * @param {string} source - Which source produced the payload
+ */
+function buildTranscriptResult(payload, source) {
+  const chunks = Array.isArray(payload?.content) ? payload.content : [];
+  const payloadLanguage =
+    typeof payload?.lang === "string" && payload.lang ? payload.lang : null;
+  const transcript = [];
+  let plainText = "";
+  let timestampedText = "";
+
+  for (const chunk of chunks) {
+    // ">>" is YouTube's speaker-change marker in auto-generated captions.
+    const text = String(chunk?.text || "")
+      .replace(/>> ?/g, "")
+      .trim();
+    if (!text) continue;
+
+    // offset and duration are milliseconds in both sources.
+    const startSeconds = Math.max(0, Math.floor((Number(chunk.offset) || 0) / 1000));
+    const minutes = Math.floor(startSeconds / 60);
+    const seconds = startSeconds % 60;
+
+    transcript.push({
+      text,
+      start: startSeconds,
+      duration: Math.max(0, Math.floor((Number(chunk.duration) || 0) / 1000)),
+      language: chunk.lang || payloadLanguage,
+    });
+
+    // Plain text for display and export.
+    plainText += text + " ";
+    // Timestamped text for the model, so it can cite real positions.
+    timestampedText += `[${minutes}:${String(seconds).padStart(2, "0")}] ${text}\n`;
+  }
+
+  if (!transcript.length) {
+    return {
+      success: false,
+      error: "EMPTY_TRANSCRIPT",
+      message: "No caption text could be read for this video.",
+    };
+  }
+
+  return {
+    success: true,
+    transcript,
+    transcriptText: plainText.trim(),
+    transcriptTextTimestamped: timestampedText.trim(),
+    language: payloadLanguage,
+    availableLanguages: Array.isArray(payload?.availableLangs)
+      ? payload.availableLangs
+      : [],
+    source,
+  };
+}
+
+/**
+ * Asks the content script running in the video's tab for YouTube's own
+ * captions. The tab is the only place the caption endpoint answers from, and
+ * the content script already lives there, so it does the reading and reports
+ * its own progress to the side panel.
+ */
+async function fetchNativeTranscript(videoId) {
+  const tabId = await findYouTubeTabId(videoId);
+  if (tabId === null) {
+    return {
+      success: false,
+      error: "NO_YOUTUBE_TAB",
+      message:
+        "Open this video in a YouTube tab so the extension can read its captions.",
+    };
+  }
+
+  let response = null;
+  try {
+    response = await chrome.tabs.sendMessage(tabId, {
+      action: "extractTranscript",
+      videoId,
+    });
+  } catch (error) {
+    // No content script answered: the tab predates this extension version.
+    return {
+      success: false,
+      error: "NO_YOUTUBE_TAB",
+      message: "Reload the YouTube page, then try again.",
+    };
+  }
+
+  if (!response?.success) {
+    return {
+      success: false,
+      error: response?.error || "NO_TRANSCRIPT",
+      message: response?.message || "Could not read this video's captions.",
+    };
+  }
+
+  debugLog("[YouTube Digest] Native transcript via", response.via);
+  return buildTranscriptResult(response.payload, `youtube-${response.via}`);
+}
+
+/**
+ * Opt-in paid fallback. Supadata parses YouTube's internals server-side, which
+ * helps when the page itself refuses to hand over captions.
+ *
+ * API Docs: https://docs.supadata.ai
+ */
+async function fetchSupadataTranscript(videoId, settings) {
+  // Share only the canonical watch URL. This strips playlist, referral,
+  // timestamp, and other browsing parameters from the active tab URL.
+  const canonicalVideoUrl = YTD_SETTINGS.canonicalYouTubeUrl(videoId);
+  // Using the universal transcript endpoint with text=false to get timestamped chunks
+  const apiUrl = new URL("https://api.supadata.ai/v1/transcript");
+  apiUrl.searchParams.set("url", canonicalVideoUrl);
+  apiUrl.searchParams.set("text", "false"); // Get timestamped chunks, not plain text
+  apiUrl.searchParams.set("lang", "en"); // Prefer English
+  // Caption-only product scope: never fall back to paid AI transcription.
+  apiUrl.searchParams.set("mode", "native");
+
+  const response = await fetch(apiUrl.toString(), {
+    method: "GET",
+    headers: {
+      "x-api-key": settings.supadataApiKey,
+    },
+  });
+
+  // Handle async jobs (for videos > 20 minutes, Supadata returns a job ID)
+  if (response.status === 202) {
+    const jobData = await response.json();
+    return await pollTranscriptJob(jobData.jobId, settings.supadataApiKey);
+  }
+
+  if (response.status === 206) {
+    return {
+      success: false,
+      error: "NO_TRANSCRIPT",
+      message: "No native subtitle track is available for this video.",
+    };
+  }
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    if (response.status === 401) {
+      return {
+        success: false,
+        error: "INVALID_SUPADATA_KEY",
+        message: "Your Supadata API key is invalid. Open YouTube Digest Settings.",
+      };
+    }
+    if (response.status === 404) {
       return {
         success: false,
         error: "NO_TRANSCRIPT",
-        message: "No native subtitle track is available for this video.",
+        message: "No subtitles found for this video.",
       };
     }
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        return {
-          success: false,
-          error: "INVALID_SUPADATA_KEY",
-          message: "Your Supadata API key is invalid. Open YouTube Digest Settings.",
-        };
-      }
-      if (response.status === 404) {
-        return {
-          success: false,
-          error: "NO_TRANSCRIPT",
-          message: "No subtitles found for this video.",
-        };
-      }
-      if (response.status === 429) {
-        return {
-          success: false,
-          error: "RATE_LIMITED",
-          message:
-            "Supadata rate limit reached. Please wait a minute and try again.",
-        };
-      }
-      throw new Error(
-        errorData.message || `Supadata API error: ${response.status}`,
-      );
-    }
-
-    const data = await response.json();
-
-    // Parse the response into our internal format
-    // Supadata returns: { content: [{ text, offset, duration, lang }], lang, availableLangs }
-    const transcript = [];
-    let transcriptTextPlain = ""; // Plain text for display/export
-    let transcriptTextTimestamped = ""; // Timestamped text for AI analysis
-
-    if (data.content && Array.isArray(data.content)) {
-      for (const chunk of data.content) {
-        if (chunk.text) {
-          // Clean up caption artifacts:
-          // ">>" = speaker change marker from YouTube auto-captions
-          const cleanText = chunk.text.replace(/>> ?/g, "").trim();
-          if (!cleanText) continue; // Skip if nothing left after cleanup
-
-          // offset is in milliseconds, convert to seconds
-          const startSeconds = Math.floor((chunk.offset || 0) / 1000);
-          const minutes = Math.floor(startSeconds / 60);
-          const seconds = startSeconds % 60;
-          const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-          transcript.push({
-            text: cleanText,
-            start: startSeconds,
-            duration: Math.floor((chunk.duration || 0) / 1000),
-            language: chunk.lang || data.lang || null,
-          });
-
-          // Plain text without timestamps (for display/export)
-          transcriptTextPlain += cleanText + " ";
-
-          // Timestamped text for DeepSeek (format: [MM:SS] text)
-          // This allows the model to reference actual transcript positions.
-          transcriptTextTimestamped += `[${timestamp}] ${cleanText}\n`;
-        }
-      }
-    }
-
-    if (transcript.length === 0) {
+    if (response.status === 429) {
       return {
         success: false,
-        error: "EMPTY_TRANSCRIPT",
-        message: "Supadata returned an empty transcript for this video.",
+        error: "RATE_LIMITED",
+        message:
+          "Supadata rate limit reached. Please wait a minute and try again.",
       };
     }
-
-    return {
-      success: true,
-      transcript: transcript,
-      transcriptText: transcriptTextPlain.trim(), // For display
-      transcriptTextTimestamped: transcriptTextTimestamped.trim(), // For AI
-      language: typeof data.lang === "string" ? data.lang : null,
-    };
-  } catch (error) {
-    console.error("Transcript fetch error:", error);
-    return {
-      success: false,
-      error: error.message || "Failed to fetch transcript",
-    };
+    throw new Error(
+      errorData.message || `Supadata API error: ${response.status}`,
+    );
   }
+
+  // Supadata already answers in the canonical payload shape, which is why
+  // content.js mirrors it: no conversion belongs here.
+  return buildTranscriptResult(await response.json(), "supadata");
 }
 
 /**
@@ -870,42 +1004,7 @@ async function pollTranscriptJob(jobId, supadataApiKey) {
     const data = await response.json();
 
     if (data.status === "completed") {
-      // Parse the completed transcript
-      const transcript = [];
-      let transcriptTextPlain = "";
-      let transcriptTextTimestamped = "";
-
-      if (data.content && Array.isArray(data.content)) {
-        for (const chunk of data.content) {
-          if (chunk.text) {
-            // Clean up caption artifacts (">>" = speaker change marker)
-            const cleanText = chunk.text.replace(/>> ?/g, "").trim();
-            if (!cleanText) continue;
-
-            const startSeconds = Math.floor((chunk.offset || 0) / 1000);
-            const minutes = Math.floor(startSeconds / 60);
-            const seconds = startSeconds % 60;
-            const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-            transcript.push({
-              text: cleanText,
-              start: startSeconds,
-              duration: Math.floor((chunk.duration || 0) / 1000),
-              language: chunk.lang || data.lang || null,
-            });
-            transcriptTextPlain += cleanText + " ";
-            transcriptTextTimestamped += `[${timestamp}] ${chunk.text}\n`;
-          }
-        }
-      }
-
-      return {
-        success: true,
-        transcript: transcript,
-        transcriptText: transcriptTextPlain.trim(),
-        transcriptTextTimestamped: transcriptTextTimestamped.trim(),
-        language: typeof data.lang === "string" ? data.lang : null,
-      };
+      return buildTranscriptResult(data, "supadata");
     }
 
     if (data.status === "failed") {
@@ -916,6 +1015,59 @@ async function pollTranscriptJob(jobId, supadataApiKey) {
   }
 
   throw new Error("Transcript processing timed out");
+}
+
+/**
+ * Fetches the transcript for a YouTube video.
+ *
+ * Native YouTube captions are the default and only automatic source. Supadata
+ * runs afterwards only when the user has explicitly enabled the fallback and
+ * saved a key, so no paid request happens without consent.
+ *
+ * @param {string} videoId - The YouTube video ID (e.g., "dQw4w9WgXcQ")
+ * @returns {Object} - { success, transcript, transcriptText, language } or { success: false, error }
+ */
+async function handleFetchTranscript(videoId) {
+  try {
+    // Reading captions out of the page is slow, so a transcript is fetched at
+    // most once per video until the cache expires.
+    const cached = await readCachedTranscript(videoId);
+    if (cached) {
+      debugLog("[YouTube Digest] Reusing the saved transcript for", videoId);
+      reportTranscriptProgress("Fetching transcript", "Using the saved transcript");
+      return cached;
+    }
+
+    const native = await fetchNativeTranscript(videoId);
+    if (native.success) {
+      await writeCachedTranscript(videoId, native);
+      return native;
+    }
+
+    const settings = await getSettings();
+    if (!settings.allowSupadataFallback || !settings.supadataApiKey) {
+      return native;
+    }
+
+    debugLog(
+      "[YouTube Digest] Native captions unavailable, trying the Supadata fallback",
+    );
+    reportTranscriptProgress("Fetching transcript", "Falling back to Supadata");
+    const supadata = await fetchSupadataTranscript(videoId, settings);
+    if (supadata.success) {
+      await writeCachedTranscript(videoId, supadata);
+      return supadata;
+    }
+
+    // Native is the primary path, so surface its failure and attach Supadata's.
+    return { ...native, fallbackError: supadata.message || supadata.error };
+  } catch (error) {
+    console.error("Transcript fetch error:", error);
+    return {
+      success: false,
+      error: error.message || "Failed to fetch transcript",
+    };
+  }
 }
 
 // ============================================================
@@ -1220,7 +1372,7 @@ async function handleSaveNote(
     // First, try to get the transcript from the digest cache. The side panel
     // saves digests to chrome.storage.LOCAL — this used to look in
     // storage.session (the wrong store), so it missed every time and
-    // refetched the transcript from Supadata on every saved note.
+    // refetched the transcript on every saved note.
     let transcript = null;
     try {
       const cached = await chrome.storage.local.get(`digest_${videoId}`);
@@ -1784,4 +1936,14 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   validateTranscriptBatchRequest,
   normalizeTranslatedSegmentBatch,
   handleTranslateContent,
+};
+
+// Transcript-source helpers are exposed for the repository's Node tests only.
+globalThis.__YTD_TRANSCRIPT_SOURCE_TESTING__ = {
+  videoIdFromUrl,
+  buildTranscriptResult,
+  fetchNativeTranscript,
+  handleFetchTranscript,
+  readCachedTranscript,
+  writeCachedTranscript,
 };

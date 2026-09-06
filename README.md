@@ -63,9 +63,9 @@ You do not need to understand the code or use the command line. Send this messag
 Your agent should:
 
 1. Ask where you want to keep the project, download or clone it there, and tell you the exact full path. If you want a suggestion, it can offer `~/Documents/youtube-digest` on macOS or Linux, or `%USERPROFILE%\Documents\youtube-digest` on Windows.
-2. Open the official Supadata and DeepSeek pages below and help you create your own accounts.
+2. Open the official DeepSeek page below and help you create your own account.
 3. Walk you through selecting the exact project folder you chose in Chrome with **Load unpacked**.
-4. Show you where to enter your API keys in the extension's **Settings** page.
+4. Show you where to enter your DeepSeek API key in the extension's **Settings** page.
 5. Open a YouTube video with captions and confirm the transcript and translation work.
 
 Keep this folder in the same place after installation. If you move or delete it, Chrome's unpacked extension stops working until you load the extension again from its new permanent folder.
@@ -87,22 +87,13 @@ If you prefer to do it yourself:
 
 Because this is an unpacked extension, it does not update automatically. After downloading an update or changing local files, click **Reload** on the YouTube Digest card at `chrome://extensions`, then refresh open YouTube tabs. Moving or deleting the source folder breaks the unpacked extension until you load it again from the new location.
 
-## Set up your API keys
+## Set up your API key
 
-YouTube Digest needs two keys under your own provider accounts:
+YouTube Digest needs one key under your own provider account:
 
-1. A **Supadata API key** to retrieve YouTube transcripts.
-2. A **DeepSeek API key** for overviews, explanations, translation, and automatic note polishing.
+1. A **DeepSeek API key** for overviews, explanations, translation, and automatic note polishing.
 
-### Get a Supadata API key
-
-1. Open the official [Supadata sign-up page](https://dash.supadata.ai/auth/sign-up).
-2. Create an account and complete the short onboarding flow.
-3. Supadata generates an API key automatically during onboarding.
-4. Open the [Supadata dashboard](https://dash.supadata.ai/) whenever you need to find or manage the key.
-5. Copy the key and paste it into **Supadata API key** in YouTube Digest Settings.
-
-See the [official Supadata documentation](https://docs.supadata.ai/) if the dashboard flow changes.
+Transcripts do not need a key. They are read from YouTube's own caption track in the video tab you already have open.
 
 ### Get a DeepSeek API key
 
@@ -149,7 +140,7 @@ Keys and settings are stored in Chrome's local extension storage on your device.
 
 - Google Chrome 116 or newer, using the Side Panel API.
 - Standard `youtube.com/watch` video pages.
-- Native subtitle tracks returned by Supadata. YouTube Digest prefers English when available, but may show another native language.
+- Native YouTube subtitle tracks, read directly from the open video tab. YouTube Digest prefers English when available, but may show another native language.
 - Original, Simplified Chinese, and aligned bilingual transcript views.
 - Compact synchronized in-player English, Chinese, and bilingual subtitles.
 - Sentence-loop shadowing, previous/next sentence controls, and adjustable speaking gaps.
@@ -162,9 +153,26 @@ Keys and settings are stored in Chrome's local extension storage on your device.
 
 Shorts, live streams, private or access-restricted videos, and videos without an available native transcript may not work. Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
 
-YouTube Digest forces Supadata's `mode=native`. It does not request AI-generated transcripts or perform local audio transcription when native captions are unavailable.
+YouTube Digest never requests AI-generated transcripts and never transcribes audio locally. When a video has no native captions, it says so instead.
 
-## Supadata free tier and request costs
+## How transcripts are read
+
+The extension's content script, which already runs on the watch page, asks the player for the video's caption track and downloads the timestamped subtitles from YouTube itself. This costs nothing and needs no key. Keep the video tab open while the transcript loads.
+
+Both sources hand back the same payload, the one Supadata's API returns, so everything downstream reads one structure and neither source can drift from the other.
+
+When that caption request comes back empty even though the video has subtitles, YouTube Digest falls back to opening YouTube's own **Show transcript** panel and reading it. The side panel reports live progress while it works, and long videos can take up to a minute.
+
+A transcript is fetched at most once per video. The result is saved locally as soon as it succeeds, so reopening the same video reuses it instead of reading the page again. Cached transcripts expire after 7 days, the 10 most recent are kept, and **Clear cached digests** in Settings removes them.
+
+## Optional Supadata fallback
+
+Supadata is a paid service that parses YouTube's internals on its own servers. It is **off by default** and only runs when both conditions hold:
+
+1. You tick **Use the paid Supadata service when YouTube's captions cannot be read** in Settings.
+2. You save a Supadata API key in the same section.
+
+To enable it, open the [Supadata sign-up page](https://dash.supadata.ai/auth/sign-up), complete onboarding, then copy the generated key from the [Supadata dashboard](https://dash.supadata.ai/) into YouTube Digest Settings. See the [official Supadata documentation](https://docs.supadata.ai/) if the dashboard flow changes.
 
 Current as of August 9, 2026, the [Supadata pricing page](https://supadata.ai/pricing) lists a free tier with **100 credits per month**, no credit card required. Unused credits do not roll over. Supadata pricing can change, so check the current page before relying on these numbers.
 
@@ -174,11 +182,19 @@ The [Supadata transcript documentation](https://docs.supadata.ai/get-transcript)
 - A generated transcript costs **2 credits per video minute**. YouTube Digest does not use this path because it forces `mode=native`.
 - An unavailable native lookup returned as HTTP `206` still uses **1 credit**.
 
-With the current native-only behavior, the free tier can cover roughly 100 transcript lookups per month when each request succeeds once. Retries and unavailable-caption lookups also consume credits, so actual successful-video coverage can be lower.
+Because the fallback only fires after YouTube's own captions fail, most videos never spend a credit. Set a spending limit and monitor the account anyway.
 
-DeepSeek usage is separate from Supadata. DeepSeek may apply its own free quota, rate limits, or charges. YouTube Digest does not collect payments or resell access. Set spending limits and monitor both accounts. The estimate below explains the current DeepSeek translation cost.
+DeepSeek usage is separate. DeepSeek may apply its own free quota, rate limits, or charges. YouTube Digest does not collect payments or resell access. The estimate below explains the current DeepSeek translation cost.
+
+## Transcript translation
+
+Chrome's built-in translator is the default. It runs a model on your device, so translating a transcript costs nothing, needs no API key, and works offline. It requires Chrome 138 or newer and downloads the language pack once, which the side panel reports while it happens.
+
+You can switch **Transcript translation** to DeepSeek in Settings. DeepSeek reads a whole batch in context, which reads better on idioms and technical wording, at the token cost estimated below. A failed browser translation is never retried against DeepSeek automatically: spending tokens you did not ask to spend would defeat the free default. If Chrome's translator is unavailable, the side panel says so and points at the setting.
 
 ## DeepSeek V4 Flash translation cost estimate
+
+The estimate below applies only when you switch transcript translation to DeepSeek.
 
 Current as of August 10, 2026, DeepSeek lists the following prices per 1 million tokens on its official [pricing page](https://api-docs.deepseek.com/quick_start/pricing/):
 
@@ -216,12 +232,13 @@ If you want another AI provider or model, first open the exact YouTube Digest pr
 
 YouTube Digest makes provider requests directly from the extension:
 
-1. It sends a canonical YouTube watch URL to Supadata to request the native transcript.
+1. It reads the transcript from the YouTube page you already have open. No third party is involved.
 2. It sends the transcript and relevant video metadata to DeepSeek when you request AI features.
 3. Focused features send only the content they need, such as selected text with context or small transcript batches for translation.
 4. It stores keys, settings, notes, and recent cache entries locally in Chrome.
+5. It sends a canonical YouTube watch URL to Supadata only if you enabled the optional fallback and YouTube's own captions could not be read.
 
-There is no YouTube Digest account system, advertising, analytics, or telemetry. Supadata and DeepSeek still receive data under their own terms and privacy policies. See [PRIVACY.md](PRIVACY.md) for details.
+There is no YouTube Digest account system, advertising, analytics, or telemetry. DeepSeek, and Supadata when you enable it, still receive data under their own terms and privacy policies. See [PRIVACY.md](PRIVACY.md) for details.
 
 ## Troubleshooting
 
@@ -242,15 +259,16 @@ There is no YouTube Digest account system, advertising, analytics, or telemetry.
 
 ### YouTube Digest asks for setup
 
-- Open **Settings** and save both a Supadata key and a DeepSeek key.
+- Open **Settings** and save a DeepSeek key. Transcripts need no key.
 - This published version uses the fixed DeepSeek V4 Flash endpoint and model. There are no Base URL or Model fields to configure.
 - If Settings says a legacy custom provider was removed, enter a DeepSeek key. The old AI key was cleared so it could not be reused with the wrong service.
 
 ### No transcript is found
 
 - Confirm the video is public and has native captions.
-- Check your Supadata key, remaining credits, rate limit, and account status.
-- Remember that unavailable native lookups and manual retries may still consume credits.
+- Keep the YouTube video tab open. The transcript is read from that page, so a closed or navigated-away tab reports "YouTube tab needed".
+- If the panel says the transcript panel did not open, click **Show transcript** under the video yourself, then try again.
+- If you enabled the optional Supadata fallback, check its key, remaining credits, rate limit, and account status. Unavailable lookups and manual retries still consume credits.
 
 YouTube Digest will not fall back to generated transcription.
 
