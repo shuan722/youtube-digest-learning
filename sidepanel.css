@@ -127,6 +127,12 @@ body {
   flex: 1;
 }
 
+.header-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+}
+
 .settings-btn {
   flex-shrink: 0;
   padding: 5px 10px;

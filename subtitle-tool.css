@@ -1,0 +1,237 @@
+:root {
+  --bg: #f7f3ec;
+  --card-bg: #fffdf9;
+  --border: #ece5d9;
+  --border-heavy: #ddd4c4;
+  --text: #2e2a24;
+  --text-secondary: #6b6258;
+  --text-muted: #a39a8d;
+  --accent: #c8674f;
+  --accent-hover: #b25742;
+  --accent-dim: rgba(200, 103, 79, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.tool-shell {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+header .eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+header h1 {
+  margin: 6px 0 8px;
+  font-size: 24px;
+}
+
+header .lede {
+  color: var(--text-secondary);
+  max-width: 60ch;
+}
+
+header .lede code {
+  background: var(--accent-dim);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  margin-top: 18px;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.help {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin: 6px 0 0;
+}
+
+.upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.file-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 16px;
+  border: 1px solid var(--border-heavy);
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.file-picker:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.file-picker input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+select,
+input[type="text"] {
+  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--border-heavy);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary:hover {
+  background: var(--accent-hover);
+}
+
+button.primary:disabled {
+  background: var(--border-heavy);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#translateStatus {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.progress-track {
+  margin-top: 12px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.preview-list {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.preview-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-row:last-child {
+  border-bottom: none;
+}
+
+.preview-row .time {
+  color: var(--accent);
+  font-size: 11px;
+  padding-top: 2px;
+}
+
+.preview-row .original {
+  margin: 0;
+}
+
+.preview-row .translation {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+}
+
+.preview-row .translation.pending {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.export-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.export-options label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.export-checkbox {
+  flex-direction: row !important;
+  align-items: center !important;
+}
+
+footer {
+  margin-top: 28px;
+  font-size: 13px;
+}
+
+footer a {
+  color: var(--text-secondary);
+}

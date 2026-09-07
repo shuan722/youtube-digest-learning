@@ -1,6 +1,6 @@
 # YouTube Digest Learning
 
-> A learning-focused community edition based on [YouTube Digest](https://github.com/zarazhangrui/youtube-digest) by Zara Zhang. Version 1.5.0 builds a complete watch, understand, shadow, collect, review, and deep-reading workflow around real YouTube videos.
+> A learning-focused community edition based on [YouTube Digest](https://github.com/zarazhangrui/youtube-digest) by Zara Zhang. Version 1.6.0 builds a complete watch, understand, shadow, collect, review, and deep-reading workflow around real YouTube videos.
 
 This project preserves the upstream MIT License and copyright notice. It is an independent derivative project and is not an official release of the original author.
 
@@ -10,7 +10,7 @@ Turn every YouTube video into a resource for deep learning. YouTube Digest Learn
 
 ## Added in this learning edition
 
-- Automatically select and highlight level-appropriate vocabulary, collocations, natural expressions, and memorable sentences using the learner's learning, fuzzy, and mastered history.
+- Select and highlight level-appropriate vocabulary, collocations, natural expressions, and memorable sentences using the learner's learning, fuzzy, and mastered history, on a manual click so that opening a video never spends tokens.
 - Show compact in-player subtitles in highlighted English, Chinese, or highlighted bilingual mode, synchronized with playback.
 - Loop the current sentence for shadowing, move between sentences, and choose a 0.8, 1.5, or 2.5 second speaking gap.
 - Save selected words and phrases locally and highlight them when they reappear in other videos.
@@ -21,9 +21,18 @@ Turn every YouTube video into a resource for deep learning. YouTube Digest Learn
 - Export the vocabulary notebook as CSV.
 - Export original, Simplified Chinese, or bilingual transcripts as printable HTML, Markdown, or plain text.
 - Generate a printable intensive-reading PDF with bilingual transcript, UK and US IPA, personalized vocabulary, natural phrases, key sentences, ideas, questions, and speaking practice.
-- Reuse cached transcript, translation, and intensive-reading results when reopening the same video to reduce duplicate API requests.
+- Reuse cached transcript, translation, and intensive-reading results when reopening the same video, restoring highlights from the cache without a new API request.
 - Preview a video through an AI overview in English, Simplified Chinese, or an aligned bilingual view without paying for another request when switching languages.
 - Read transcripts straight from YouTube's captions and translate them with Chrome's on-device model, so watching a video with a bilingual transcript costs nothing.
+- Translate and export an uploaded yt-dlp `.srt` file from a standalone subtitle tool page, reusing the same sentence-segmentation strategy and Chrome's on-device translator, without opening YouTube at all.
+
+## Version 1.6.0
+
+- Fixed smart reading to run only when its button is clicked. Opening a video, reloading the side panel, and switching intensity never trigger a DeepSeek request now.
+- Added a standalone subtitle tool page: upload a yt-dlp `.srt` file, translate it on-device with Chrome's built-in translator, and export it, all without opening YouTube.
+- Added a structured JSON export format and a print-to-PDF export, in both the subtitle tool and the side panel's export dialog, for handing a transcript to another agent or tool.
+- Captured the video's author and publish date from YouTube's own page data when the transcript comes from a native fetch, and included them in the JSON export.
+- Added a "Subtitle tool" entry point next to Settings in the side panel header, and a matching link on the Settings page.
 
 ## Version 1.5.0
 
@@ -219,6 +228,14 @@ A measured 20-minute English talk contained **2,935 spoken English words** and 1
 If all input is billed as cache miss, input costs about $0.0046 and output costs about $0.0010 to $0.0013, for a total of about $0.0056 to $0.0059. When much of the repeated system prompt hits DeepSeek's automatic best-effort cache, a realistic lower end is about $0.002 to $0.003. A practical estimate for fully translating this talk is therefore **$0.002 to $0.006 USD, about ¥0.02 to ¥0.04**.
 
 Translation is lazy and progressive. Cached segments are reused, and only rows you request by scrolling into them incur calls. Retries, provider behavior, and pricing changes can increase the final cost.
+
+## Smart reading
+
+Smart reading is the one feature that always calls DeepSeek, so it never runs on its own. Opening a video, reloading the side panel, and switching intensity all send nothing. Click the smart reading button (labeled 智能精读) on the Transcript tab and the current transcript is analyzed once.
+
+The result is cached per video, per intensity, and per learner profile. Reopening the video restores the highlights from that cache without a request, and the button reports how many items came back. Marking a term mastered or fuzzy changes the profile on purpose, so the next analysis of that video reflects what you now know instead of repeating it.
+
+Light, balanced, and deep control how many candidates the model is asked for. Deep produces the longest answer, so it is the mode most sensitive to the output-token limit. If an analysis is cut short by that limit, the items that arrived in full are kept rather than the whole call being discarded.
 
 ## Remix it with your coding agent
 

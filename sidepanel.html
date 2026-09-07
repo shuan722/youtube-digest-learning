@@ -17,15 +17,26 @@
           <div class="video-title" id="videoTitle"></div>
           <div class="video-channel" id="videoChannel"></div>
         </div>
-        <button
-          class="settings-btn"
-          id="settingsBtn"
-          type="button"
-          title="Open YouTube Digest settings"
-          aria-label="Open YouTube Digest settings"
-        >
-          Settings
-        </button>
+        <div class="header-actions">
+          <button
+            class="settings-btn"
+            id="subtitleToolBtn"
+            type="button"
+            title="Translate and export an uploaded yt-dlp .srt file"
+            aria-label="Open subtitle translate and export tool"
+          >
+            Subtitle tool
+          </button>
+          <button
+            class="settings-btn"
+            id="settingsBtn"
+            type="button"
+            title="Open YouTube Digest settings"
+            aria-label="Open YouTube Digest settings"
+          >
+            Settings
+          </button>
+        </div>
       </div>
 
       <!-- Tab navigation -->
@@ -119,7 +130,7 @@
                   <option value="balanced" selected>均衡</option>
                   <option value="deep">深度</option>
                 </select>
-                <button class="enhance-btn smart-reading-btn" id="smartReadingBtn">智能精读</button>
+                <button class="enhance-btn smart-reading-btn" id="smartReadingBtn" title="手动触发：调用 DeepSeek 分析本视频并高亮重点，结果会缓存复用">智能精读</button>
                 <button class="enhance-btn" id="copyTranscriptBtn">Copy</button>
                 <button class="enhance-btn" id="exportTranscriptBtn">
                   Export
@@ -254,6 +265,7 @@
 
     <script src="settings.js"></script>
     <script src="translator.js"></script>
+    <script src="transcript-grouping.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

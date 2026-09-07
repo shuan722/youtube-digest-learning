@@ -21,6 +21,13 @@ let currentTranscript = null;
 let currentTranscriptText = null; // Plain text (for display/export)
 let currentTranscriptTimestamped = null; // With timestamps for AI analysis
 let currentTranscriptLanguage = null;
+// e.g. "youtube-caption-api", "youtube-transcript-panel", "supadata". Carried
+// into the JSON export so a downstream agent knows how the text was sourced.
+let currentTranscriptSource = null;
+// Only readable from YouTube's own page world (see page-bridge.js), so both
+// are empty unless the transcript came from a native fetch.
+let currentVideoAuthor = "";
+let currentVideoPublishedAt = "";
 // Which translator handles the transcript. Mirrors the saved setting; the
 // browser's on-device model is the default because it costs nothing.
 let currentTranslationProvider = "browser";
@@ -106,142 +113,10 @@ let lastAutoScrollTime = 0; // Timestamp of last programmatic scroll (ignores sc
 // ============================================================
 // TRANSCRIPT GROUPING
 // ============================================================
-
-const TRANSCRIPT_SEGMENT_LIMITS = Object.freeze({
-  minChars: 60,
-  idealChars: 180,
-  maxChars: 320,
-  maxSeconds: 20,
-});
-
-function normalizeCaptionText(text) {
-  return String(text || "")
-    .replace(/\s+/g, " ")
-    .replace(/([\u3400-\u9fff])\s+([\u3400-\u9fff])/g, "$1$2")
-    .replace(/([，。；：！？])\s+(?=[\u3400-\u9fff])/g, "$1")
-    .replace(/\s+([,.;:!?，。；：！？])/g, "$1")
-    .trim();
-}
-
-/**
- * Splits a single oversized thought at the strongest nearby punctuation.
- * Word boundaries are the final safety valve for captions with no punctuation.
- */
-function splitOversizedThought(text, maxChars) {
-  const parts = [];
-  let rest = normalizeCaptionText(text);
-
-  while (rest.length > maxChars) {
-    const windowText = rest.slice(0, maxChars + 1);
-    const lowerBound = Math.floor(maxChars * 0.55);
-    let cut = -1;
-
-    for (const pattern of [/[;:；：]\s*/g, /[,，]\s*/g, /\s/g]) {
-      pattern.lastIndex = 0;
-      let match;
-      while ((match = pattern.exec(windowText))) {
-        if (match.index >= lowerBound) cut = match.index + match[0].length;
-      }
-      if (cut > 0) break;
-    }
-
-    if (cut <= 0) cut = maxChars;
-    parts.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
-  }
-
-  if (rest) parts.push(rest);
-  return parts;
-}
-
-/**
- * Reconstructs complete sentences across raw caption boundaries. Each segment
- * keeps the timestamp of the first caption that contributed text. Character
- * and time limits prevent a malformed transcript entry from becoming one giant
- * row while punctuation remains the preferred boundary.
- */
-function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
-  if (!Array.isArray(entries) || entries.length === 0) return [];
-
-  const pieces = [];
-  entries.forEach((entry, entryIndex) => {
-    const text = normalizeCaptionText(entry?.text);
-    if (!text) return;
-    const start = Number.isFinite(Number(entry.start)) ? Number(entry.start) : 0;
-    const duration = Math.max(0, Number(entry.duration) || 0);
-    const sentenceParts =
-      text.match(/[^.!?;:,。！？；：，]+(?:[.!?;:,。！？；：，]+["')\]”’）】」』]*|$)/g) ||
-      [text];
-    let consumedChars = 0;
-
-    sentenceParts.forEach((sentencePart) => {
-      const cleanPart = normalizeCaptionText(sentencePart);
-      if (!cleanPart) return;
-      const oversizedParts = splitOversizedThought(cleanPart, limits.maxChars);
-      oversizedParts.forEach((part, partIndex) => {
-        const ratio = text.length ? Math.min(1, consumedChars / text.length) : 0;
-        pieces.push({
-          text: part,
-          start: start + duration * ratio,
-          semanticEnd:
-            /[.!?。！？]["')\]”’）】」』]*$/.test(part) ||
-            oversizedParts.length > 1,
-          clauseEnd: /[;:,；：，]["')\]”’）】」』]*$/.test(part),
-          sourceOrder: `${entryIndex}:${partIndex}`,
-        });
-        consumedChars += part.length + 1;
-      });
-    });
-  });
-
-  const grouped = [];
-  let current = null;
-
-  const flush = () => {
-    if (!current || !current.text.trim()) return;
-    const index = grouped.length;
-    const text = normalizeCaptionText(current.text);
-    grouped.push({
-      id: `segment-${index}-${Math.round(current.start * 1000)}`,
-      start: current.start,
-      text,
-      texts: [text],
-    });
-    current = null;
-  };
-
-  pieces.forEach((piece) => {
-    if (!current) current = { start: piece.start, text: "" };
-    current.text = normalizeCaptionText(`${current.text} ${piece.text}`);
-    const elapsed = Math.max(0, piece.start - current.start);
-    const comfortablySized = current.text.length >= limits.minChars;
-    const reachedIdeal = current.text.length >= limits.idealChars;
-    const atNaturalBoundary =
-      piece.semanticEnd ||
-      (piece.clauseEnd &&
-        (reachedIdeal ||
-          current.text.length >= limits.maxChars ||
-          elapsed >= limits.maxSeconds));
-    const reachedGuardrail =
-      atNaturalBoundary &&
-      (current.text.length >= limits.maxChars || elapsed >= limits.maxSeconds);
-    const reachedHardGuardrail =
-      current.text.length >= Math.round(limits.maxChars * 1.2) ||
-      elapsed >= limits.maxSeconds + 5;
-
-    if (
-      (atNaturalBoundary && (comfortablySized || elapsed >= 8)) ||
-      (atNaturalBoundary && reachedIdeal) ||
-      reachedGuardrail ||
-      reachedHardGuardrail
-    ) {
-      flush();
-    }
-  });
-  flush();
-
-  return grouped;
-}
+// TRANSCRIPT_SEGMENT_LIMITS, normalizeCaptionText, splitOversizedThought, and
+// groupTranscriptEntries live in transcript-grouping.js (loaded before this
+// file in sidepanel.html) so subtitle-tool.js can reuse the same
+// segmentation strategy for imported yt-dlp .srt files.
 
 // ============================================================
 // INITIALIZATION
@@ -405,6 +280,10 @@ function setupEventListeners() {
     chrome.runtime.sendMessage({ action: "openOptions" });
   });
 
+  document.getElementById("subtitleToolBtn")?.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ action: "openSubtitleTool" });
+  });
+
   // Transcript actions
   document
     .getElementById("copyTranscriptBtn")
@@ -417,7 +296,10 @@ function setupEventListeners() {
     ?.addEventListener("click", exportVocabularyCsv);
   document
     .getElementById("smartReadingBtn")
-    ?.addEventListener("click", runSmartReading);
+    ?.addEventListener("click", () => runSmartReading());
+  document
+    .getElementById("learningIntensity")
+    ?.addEventListener("change", () => loadCachedSmartReading());
   document
     .getElementById("vocabularySearch")
     ?.addEventListener("input", (event) => renderVocabulary(event.target.value));
@@ -645,7 +527,7 @@ async function startDigest(videoId, videoUrl) {
     // Setup explain feature
     setupExplainFeature();
     if (currentTranscriptMode !== "original") translateTranscript();
-    void runSmartReading({ automatic: true });
+    void loadCachedSmartReading();
     return;
   }
 
@@ -656,6 +538,9 @@ async function startDigest(videoId, videoUrl) {
   currentTranscriptText = null;
   currentTranscriptTimestamped = null;
   currentTranscriptLanguage = null;
+  currentTranscriptSource = null;
+  currentVideoAuthor = "";
+  currentVideoPublishedAt = "";
   isAnalysisLoading = false;
 
   if (currentVideoTitle || currentChannelName) {
@@ -691,6 +576,9 @@ async function startDigest(videoId, videoUrl) {
   currentTranscriptText = transcriptResult.transcriptText;
   currentTranscriptTimestamped = transcriptResult.transcriptTextTimestamped;
   currentTranscriptLanguage = transcriptResult.language || null;
+  currentTranscriptSource = transcriptResult.source || null;
+  currentVideoAuthor = transcriptResult.author || "";
+  currentVideoPublishedAt = transcriptResult.publishedAt || "";
 
   // Render transcript immediately (no LLM needed)
   renderTranscript();
@@ -703,7 +591,7 @@ async function startDigest(videoId, videoUrl) {
   // Setup explain feature for text selection
   setupExplainFeature();
   if (currentTranscriptMode !== "original") translateTranscript();
-  void runSmartReading({ automatic: true });
+  void loadCachedSmartReading();
 
   // Save transcript to cache (without analysis)
   await saveToCache(videoId);
@@ -1010,6 +898,7 @@ function exportTranscript() {
 function getExportRows() {
   return getActiveTranscriptSegments().map((segment) => ({
     timestamp: `${Math.floor(segment.start / 60)}:${String(Math.floor(segment.start % 60)).padStart(2, "0")}`,
+    start: segment.start,
     original: normalizeCaptionText(segment.text),
     translated:
       transcriptParagraphCache.get(transcriptTranslationCacheKey(segment)) || "",
@@ -1026,7 +915,7 @@ function openExportDialog() {
       <div class="explain-modal-header"><div class="explain-modal-title">Export transcript</div><button class="explain-modal-close" data-close>✕</button></div>
       <div class="export-options">
         <label>Language<select id="exportLanguage"><option value="original">English / original</option><option value="zh">中文</option><option value="bilingual">双语（上英下中）</option></select></label>
-        <label>Format<select id="exportFormat"><option value="study_pdf">英语精读 PDF（推荐）</option><option value="study">英语精读 HTML</option><option value="html">普通逐字稿 HTML</option><option value="md">Markdown</option><option value="txt">Plain text</option></select></label>
+        <label>Format<select id="exportFormat"><option value="study_pdf">英语精读 PDF（推荐）</option><option value="study">英语精读 HTML</option><option value="html">普通逐字稿 HTML</option><option value="md">Markdown</option><option value="txt">Plain text</option><option value="json">结构化 JSON（供 agent 使用）</option></select></label>
         <label class="export-checkbox"><input id="exportTimestamps" type="checkbox" checked /> Include timestamps</label>
         <label class="export-checkbox"><input id="exportWords" type="checkbox" checked /> Append this video's vocabulary</label>
         <p class="export-hint">For Chinese or bilingual export, first open that transcript mode and let all visible segments finish translating.</p>
@@ -1049,6 +938,10 @@ function openExportDialog() {
 
 function exportTranscriptAdvanced(options) {
   const rows = getExportRows();
+  if (options.format === "json") {
+    exportTranscriptJson(rows);
+    return;
+  }
   const needsTranslation = options.language !== "original";
   if (needsTranslation && rows.some((row) => !row.translated)) {
     alert("Some Chinese translations are not ready. Open 中文 or 双语, scroll through the transcript until translation finishes, then export again.");
@@ -1081,6 +974,38 @@ function exportTranscriptAdvanced(options) {
   let output = heading + rows.map(lineText).join("\n\n");
   if (words.length) output += `\n\n${options.format === "md" ? "## Vocabulary" : "VOCABULARY"}\n\n${words.map((word) => `- ${word.term}${word.note ? ` — ${word.note}` : ""}`).join("\n")}`;
   downloadFile(output, `${sanitizeFilename(title)}${suffix}.${options.format}`, "text/plain");
+}
+
+/**
+ * Structured JSON export for a downstream agent (e.g. a blog-writing skill).
+ * Unlike the other formats this ignores the language dropdown: it always
+ * includes both the original text and whatever translation already exists,
+ * so it never blocks on "translation not ready" the way zh/bilingual do.
+ */
+function exportTranscriptJson(rows) {
+  const payload = {
+    videoId: currentVideoId || null,
+    title: currentVideoTitle || "",
+    // The canonical author string is only readable from YouTube's own page
+    // world (see page-bridge.js) and is therefore only populated for native
+    // fetches; the DOM-scraped channel name covers the Supadata source too.
+    author: currentVideoAuthor || currentChannelName || "",
+    publishedAt: currentVideoPublishedAt || "",
+    durationSeconds: Math.round(currentVideoDuration || 0),
+    transcriptSource: currentTranscriptSource || null,
+    translationLanguage: rows.some((row) => row.translated) ? "zh-Hans" : null,
+    transcript: rows.map((row) => ({
+      startMs: Math.round((row.start || 0) * 1000),
+      time: row.timestamp,
+      text: row.original,
+      textZh: row.translated || "",
+    })),
+  };
+  downloadFile(
+    JSON.stringify(payload, null, 2),
+    `${sanitizeFilename(currentVideoTitle)}-transcript.json`,
+    "application/json",
+  );
 }
 
 function exportIntensiveReading(rows, meta, words, printAsPdf = false) {
@@ -1950,17 +1875,66 @@ function learningProfileFingerprint(profile) {
   return (hash >>> 0).toString(36);
 }
 
-async function runSmartReading({ automatic = false } = {}) {
-  if (!currentTranscriptText || !currentVideoId || isLearningAnalysisLoading) return;
+/**
+ * Storage key for one video's smart-reading result.
+ *
+ * The learner profile is part of the key on purpose: marking a term known or
+ * fuzzy changes what the analysis should select, so an older result for the
+ * same video and intensity must not be reused.
+ */
+async function smartReadingCacheKey(intensity) {
+  await loadLearningProfile();
+  return `learning_v5_${currentVideoId}_${intensity}_${learningProfileFingerprint(learningProfile)}`;
+}
+
+/**
+ * Restores a previous smart-reading result without calling the API.
+ *
+ * Smart reading is manual-only: opening a video, reloading the panel, or
+ * switching tabs must never spend DeepSeek tokens on its own. Highlights that
+ * were already paid for are still restored, so the analysis feels persistent.
+ */
+async function loadCachedSmartReading() {
   const button = document.getElementById("smartReadingBtn");
+  if (!button || !currentVideoId) return;
+  const intensity = document.getElementById("learningIntensity")?.value || "balanced";
+  button.textContent = "智能精读";
+  try {
+    const cacheKey = await smartReadingCacheKey(intensity);
+    const cached = await chrome.storage.local.get(cacheKey);
+    if (!Array.isArray(cached[cacheKey]?.items)) {
+      learningItems = [];
+      learningGuide = {};
+      applyLearningHighlights();
+      return;
+    }
+    learningItems = cached[cacheKey].items;
+    learningGuide = cached[cacheKey].guide || {};
+    applyLearningHighlights();
+    button.textContent = `已高亮 ${learningItems.length} 项（缓存）`;
+  } catch (error) {
+    console.error("[YouTube Digest Panel] Smart reading cache read failed:", error);
+  }
+}
+
+/**
+ * Runs the smart-reading analysis. Only ever called from the button, so every
+ * DeepSeek request is one the user explicitly asked for, and every failure is
+ * reported instead of being swallowed.
+ */
+async function runSmartReading() {
+  if (!currentVideoId || isLearningAnalysisLoading) return;
+  const button = document.getElementById("smartReadingBtn");
+  if (!currentTranscriptText) {
+    alert("逐字稿还没准备好，请稍后再试。");
+    return;
+  }
   const intensity = document.getElementById("learningIntensity")?.value || "balanced";
   isLearningAnalysisLoading = true;
   button.disabled = true;
-  button.textContent = automatic ? "自动分析中…" : "分析中…";
+  button.textContent = "分析中…";
   try {
-    await loadLearningProfile();
-    const profileVersion = learningProfileFingerprint(learningProfile);
-    const cacheKey = `learning_v5_${currentVideoId}_${intensity}_${profileVersion}`;
+    const cacheKey = await smartReadingCacheKey(intensity);
     const cached = await chrome.storage.local.get(cacheKey);
     if (Array.isArray(cached[cacheKey]?.items)) {
       learningItems = cached[cacheKey].items;
@@ -1978,7 +1952,7 @@ async function runSmartReading({ automatic = false } = {}) {
     button.textContent = `已高亮 ${learningItems.length} 项`;
   } catch (error) {
     button.textContent = "重试智能精读";
-    if (!automatic) alert(error.message);
+    alert(error.message);
   } finally {
     isLearningAnalysisLoading = false;
     button.disabled = false;

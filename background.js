@@ -156,7 +156,14 @@ async function requestAiCompletion({
       throw error;
     }
 
-    return { text, settings };
+    return {
+      text,
+      settings,
+      // "length" means max_tokens cut the answer off. Callers must not treat
+      // that as a malformed response: retrying an identical request cannot fix
+      // it, and the partial body is still worth salvaging.
+      finishReason: data.choices?.[0]?.finish_reason || "",
+    };
   } catch (error) {
     if (timeoutKind === "idle") {
       const timeoutError = new Error(
@@ -459,6 +466,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.action === "openSubtitleTool") {
+    chrome.tabs.create({ url: chrome.runtime.getURL("subtitle-tool.html") });
+    sendResponse({ success: true });
+    return false;
+  }
+
   if (message.action === "openSidePanel") {
     const tabId = sender.tab?.id;
     debugLog("[YouTube Digest BG] openSidePanel requested from tab:", tabId);
@@ -607,15 +620,24 @@ async function handleAnalyzeLearningItems(
     const learning = Array.isArray(profile.learning) ? profile.learning.slice(0, 500) : [];
     const systemPrompt = `You are the editor of a polished bilingual English intensive-reading workbook for a Chinese learner whose receptive level is approximately CEFR B2 and whose target frontier is upper-B2 to C1. Select only high-value learning material. Prioritize reusable idiomatic phrases, collocations, phrasal verbs, abstract vocabulary, and memorable sentences. Never select items on the mastered list. When fuzzy or learning-list items occur naturally in the transcript, prioritize them and their useful collocations; also infer adjacent items of comparable difficulty so recommendations adapt to the learner over time. Avoid proper nouns, obvious B1 words, transcript errors, and duplicate variants. Aim for ${density} candidates per 500 words, but return no more than 12 words, 15 phrases, and 5 sentences. Every term and sourceContext must appear verbatim in the transcript. For type=word, provide accurate UK and US IPA and a compact part of speech such as v., n., adj., or adv. For phrases and sentences leave ipaUk, ipaUs, and partOfSpeech empty. For every item provide a concise, learner-friendly English definition in definitionEn; explain the contextual sense, not every dictionary sense. Also edit the video's ideas into concise study material. Return JSON only with this shape: {"items":[{"term":"exact surface text","type":"word|phrase|sentence","ipaUk":"/UK IPA or empty/","ipaUs":"/US IPA or empty/","partOfSpeech":"v.|n.|adj.|adv.|empty","definitionEn":"concise contextual English definition","meaningZh":"contextual Chinese meaning","sourceContext":"short exact original sentence","reasonZh":"short reason it is worth learning","level":"B2|C1","example":"one short reusable English example"}],"guide":{"topicZh":"one-line topic","coreQuestion":"one thought-provoking English question","ideas":["3 to 5 concise Chinese insights"],"criticalQuestions":["2 Chinese critical-reading questions"],"retelling":"a natural 70-100 word English retelling model","personalResponse":"a 4-sentence English response scaffold tailored to the topic"}}.`;
     const userPrompt = `Video: ${videoTitle || "Untitled"}\nMastered (exclude): ${known.join(", ") || "none"}\nFuzzy (prioritize when present): ${fuzzy.join(", ") || "none"}\nLearning vocabulary (prioritize and infer similar level): ${learning.join(", ") || "none"}\n\nTranscript:\n${text.slice(0, 60000)}`;
-    const { text: responseText } = await requestAiCompletion({
+    const { text: responseText, finishReason } = await requestAiCompletion({
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
       temperature: 0.2,
-      maxTokens: 6000,
+      // Every item carries ten fields and the guide adds a retelling model, so
+      // a full answer measures ~6.5-8k tokens. 6000 truncated it mid-array on
+      // every real video; this leaves ~1.5x headroom while staying well inside
+      // the 120s hard timeout.
+      maxTokens: 12000,
       responseFormat: { type: "json_object" },
     });
+    if (finishReason === "length") {
+      console.warn(
+        "[YouTube Digest] Learning analysis hit max_tokens; salvaging the complete items.",
+      );
+    }
     const parsed = parseLooseJson(responseText);
     const seen = new Set();
     const items = (Array.isArray(parsed?.items) ? parsed.items : [])
@@ -899,7 +921,14 @@ async function fetchNativeTranscript(videoId) {
   }
 
   debugLog("[YouTube Digest] Native transcript via", response.via);
-  return buildTranscriptResult(response.payload, `youtube-${response.via}`);
+  const result = buildTranscriptResult(response.payload, `youtube-${response.via}`);
+  if (result.success) {
+    // Only the page's own JavaScript world can read these (see
+    // page-bridge.js), so the content script is the only source for them.
+    result.author = response.author || "";
+    result.publishedAt = response.publishedAt || "";
+  }
+  return result;
 }
 
 /**
@@ -1106,8 +1135,53 @@ function parseLooseJson(text) {
     // Most common LLM slip: a trailing comma right before a } or ].
     // e.g. ["a", "b", ]  ->  ["a", "b" ]
     const repaired = cleaned.replace(/,(\s*[}\]])/g, "$1");
-    return JSON.parse(repaired);
+    try {
+      return JSON.parse(repaired);
+    } catch (secondError) {
+      // A response cut off by max_tokens is incomplete, not malformed. Keep the
+      // elements that fully arrived rather than losing the whole call.
+      const salvaged = salvageTruncatedJson(cleaned);
+      if (salvaged) return JSON.parse(salvaged);
+      throw secondError;
+    }
   }
+}
+
+/**
+ * Rebuilds parseable JSON from a response that stopped mid-value.
+ *
+ * Truncation always lands inside the last element, so the document is known to
+ * be complete up to the most recent closing brace or bracket. Cut there and
+ * close whatever structures are still open. Returns null when nothing closed
+ * yet, since there is no complete element to keep.
+ */
+function salvageTruncatedJson(text) {
+  const open = [];
+  let cutIndex = -1;
+  let cutStack = null;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") open.push("}");
+    else if (char === "[") open.push("]");
+    else if (char === "}" || char === "]") {
+      open.pop();
+      cutIndex = index + 1;
+      cutStack = [...open];
+    }
+  }
+
+  if (cutIndex === -1 || !cutStack?.length) return null;
+  return text.slice(0, cutIndex) + cutStack.reverse().join("");
 }
 
 // ============================================================

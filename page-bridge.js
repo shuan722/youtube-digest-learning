@@ -29,6 +29,9 @@
       return {
         videoId: player?.videoDetails?.videoId || "",
         durationSeconds: Number(player?.videoDetails?.lengthSeconds) || 0,
+        author: player?.videoDetails?.author || "",
+        publishedAt:
+          player?.microformat?.playerMicroformatRenderer?.publishDate || "",
         tracks: tracks.map((track) => ({
           baseUrl: track?.baseUrl || "",
           languageCode: track?.languageCode || "",
@@ -37,7 +40,14 @@
         })),
       };
     } catch (error) {
-      return { videoId: "", durationSeconds: 0, tracks: [], error: error.message };
+      return {
+        videoId: "",
+        durationSeconds: 0,
+        author: "",
+        publishedAt: "",
+        tracks: [],
+        error: error.message,
+      };
     }
   };
 

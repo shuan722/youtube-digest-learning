@@ -1514,6 +1514,11 @@ async function extractTranscriptPayload() {
   const availableLangs = [
     ...new Set(tracks.map((track) => track.languageCode).filter(Boolean)),
   ];
+  // Only the page's own JavaScript world can see these (see page-bridge.js),
+  // so this is the one chance to attach them regardless of which fallback
+  // below ends up supplying the caption text itself.
+  const author = page?.author || "";
+  const publishedAt = page?.publishedAt || "";
 
   let languageCode = "";
   if (tracks.length) {
@@ -1524,6 +1529,8 @@ async function extractTranscriptPayload() {
       return {
         success: true,
         via: "caption-api",
+        author,
+        publishedAt,
         payload: { content: chunks, lang: languageCode, availableLangs },
       };
     }
@@ -1582,6 +1589,8 @@ async function extractTranscriptPayload() {
   return {
     success: true,
     via: "transcript-panel",
+    author,
+    publishedAt,
     payload: { content: chunks, lang: languageCode, availableLangs },
   };
 }

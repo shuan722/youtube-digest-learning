@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>字幕翻译导出工具 · YouTube Digest</title>
+    <link rel="stylesheet" href="subtitle-tool.css" />
+  </head>
+  <body>
+    <main class="tool-shell">
+      <header>
+        <div class="eyebrow">YouTube Digest</div>
+        <h1>字幕翻译导出工具</h1>
+        <p class="lede">
+          上传 yt-dlp 下载的 <code>.srt</code> 字幕，用与插件相同的分段策略重组段落，
+          再用 Chrome 内置翻译在本机翻译成中文，最后导出成文件。全程不经过任何服务器。
+        </p>
+      </header>
+
+      <section class="card">
+        <h2>1. 上传字幕文件</h2>
+        <div class="upload-row">
+          <label class="file-picker" for="srtFileInput">
+            <input id="srtFileInput" type="file" accept=".srt" />
+            <span id="filePickerLabel">选择 .srt 文件…</span>
+          </label>
+          <label class="inline-field">
+            源语言
+            <select id="sourceLanguage">
+              <option value="en" selected>English</option>
+              <option value="ja">日本語</option>
+              <option value="ko">한국어</option>
+              <option value="fr">Français</option>
+              <option value="de">Deutsch</option>
+              <option value="es">Español</option>
+              <option value="pt">Português</option>
+              <option value="ru">Русский</option>
+            </select>
+          </label>
+        </div>
+        <p class="help" id="parseStatus">尚未选择文件。</p>
+      </section>
+
+      <section class="card" id="translateSection" hidden>
+        <h2>2. 翻译</h2>
+        <p class="help">
+          使用 Chrome 内置 Translator API，完全在本机运行，无需 API Key，首次使用需下载一次语言模型。
+        </p>
+        <div class="action-row">
+          <button id="translateBtn" class="primary" type="button">开始翻译</button>
+          <span id="translateStatus" role="status" aria-live="polite"></span>
+        </div>
+        <div class="progress-track" id="progressTrack" hidden>
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+      </section>
+
+      <section class="card" id="exportSection" hidden>
+        <h2>3. 导出</h2>
+        <div class="export-options">
+          <label>
+            语言
+            <select id="exportLanguage">
+              <option value="original">英文 / 原文</option>
+              <option value="zh">中文</option>
+              <option value="bilingual" selected>双语（上英下中）</option>
+            </select>
+          </label>
+          <label>
+            格式
+            <select id="exportFormat">
+              <option value="txt">Plain text</option>
+              <option value="md">Markdown</option>
+              <option value="html">HTML</option>
+              <option value="pdf">PDF</option>
+              <option value="srt" selected>SRT 字幕</option>
+              <option value="json">结构化 JSON（供 agent 使用）</option>
+            </select>
+          </label>
+          <label class="export-checkbox">
+            <input id="exportTimestamps" type="checkbox" checked />
+            包含时间戳
+          </label>
+          <button id="exportBtn" class="primary" type="button">导出文件</button>
+        </div>
+        <p class="help" id="exportHint">
+          中文或双语导出需要先完成第 2 步的翻译。
+        </p>
+      </section>
+
+      <section class="card" id="previewSection" hidden>
+        <h2>4. 预览</h2>
+        <div class="preview-list" id="previewList"></div>
+      </section>
+
+      <footer>
+        <a href="options.html">返回设置</a>
+      </footer>
+    </main>
+
+    <script src="translator.js"></script>
+    <script src="transcript-grouping.js"></script>
+    <script src="subtitle-tool.js"></script>
+  </body>
+</html>

@@ -64,7 +64,9 @@ function loadSidepanelHelpers({
     YTD_SETTINGS: {},
   };
   sandbox.globalThis = sandbox;
-  vm.runInNewContext(read("sidepanel.js"), sandbox);
+  const context = vm.createContext(sandbox);
+  vm.runInContext(read("transcript-grouping.js"), context);
+  vm.runInContext(read("sidepanel.js"), context);
   return sandbox.__YTD_TRANSCRIPT_TESTING__;
 }
 
